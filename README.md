@@ -36,6 +36,8 @@ Matrix母体Agent调度
 
 Agent自优化系统
 
+AIdebug智能系统
+
 matrix母体分裂系统
 
 子Agent调度系统
