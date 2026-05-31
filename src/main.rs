@@ -16622,7 +16622,7 @@ fn handle_terminal_key(app: &mut App, now: Instant, key: KeyEvent) -> anyhow::Re
         }
     }
 
-    if !ctrl && !alt && matches!(key.code, KeyCode::Tab) {
+    if !ctrl && !alt && key.modifiers.contains(KeyModifiers::SHIFT) && matches!(key.code, KeyCode::BackTab | KeyCode::Tab) {
         let opened = if app.expanded_topbar_lane == app.selected_topbar_lane {
             app.collapse_topbar_panel();
             false
