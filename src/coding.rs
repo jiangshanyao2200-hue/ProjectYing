@@ -1,11 +1,12 @@
 #[cfg(test)]
 mod tests {
     #[test]
-    fn system_prompt_keeps_fixed_tool_projection_and_memory_readback() {
+    fn system_prompt_keeps_self_managed_toolbox_and_memory_readback() {
         let prompt = crate::PersonaKind::Coding.system_prompt_asset().trim();
         assert!(prompt.contains("默认会沿用用户在设置里的工具回执大小"));
-        assert!(prompt.contains("固定工具投影"));
-        assert!(prompt.contains("不直接暴露 `context_manage`"));
+        assert!(prompt.contains("自己的 toolbox 投影"));
+        assert!(prompt.contains("tool_manage list/open/close/pin/unpin/reload"));
+        assert!(prompt.contains("跨 persona 工具箱"));
         assert!(prompt.contains("memory_check / memory_read"));
         assert!(prompt.contains("context/Coding/"));
         assert!(prompt.contains("state.json"));

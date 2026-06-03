@@ -326,7 +326,7 @@
         {
             "type": "function",
             "name": "tool_manage",
-            "description": "Manage ProjectYing toolboxes, hot external tools, Matrix-created dynamic roles, builtin schema overrides, system settings, persona model routing, context governance routing, and read the Aidebug health snapshot instead of treating provider schema as the source of truth. Use it to list current tool visibility, reload hot external tool manifests, create/update/remove external tools, open/close/pin/unpin tool cards, read health, create/list/update/remove/copy dynamic roles, edit their assigned tool set, list/read/update/reset builtin tool schemas, set advisor_managed/summary_compact/vision_compact context governance, or update Matrix-owned tool budgets / experience parameters / persona model selection through `settings`. Closed tools stay unavailable for direct use until opened. Matrix owns toolbox, external tool manifests, role registry, tool UI display spec, schema, output policy, settings routing, compact-route assignment, and builtin schema overrides; prompt governance uses context_manage target=prompt. JSON is preferred, but the runtime also accepts the common live-provider key/value fallback for flat fields when tool output drifts.",
+            "description": "Manage ProjectYing toolboxes, hot external tools, Matrix-created dynamic roles, builtin schema overrides, system settings, persona model routing, context governance routing, and read the Aidebug health snapshot instead of treating provider schema as the source of truth. Every persona may use tool_manage to list/reload/open/close/pin/unpin its own toolbox; Matrix and 司 may also target another persona toolbox for governance. Use it to list current tool visibility, reload hot external tool manifests, create/update/remove external tools, open/close/pin/unpin tool cards, read health, create/list/update/remove/copy dynamic roles, edit their assigned tool set, list/read/update/reset builtin tool schemas, set advisor_managed/summary_compact/vision_compact context governance, or update Matrix-owned tool budgets / experience parameters / persona model selection through `settings`. Closed tools stay unavailable for direct use until opened. Matrix owns external tool manifests, role registry, tool UI display spec, schema, output policy, settings routing, compact-route assignment, and builtin schema overrides; prompt governance uses context_manage target=prompt. JSON is preferred, but the runtime also accepts the common live-provider key/value fallback for flat fields when tool output drifts.",
             "strict": false,
             "parameters": {
                 "type": "object",
@@ -339,7 +339,7 @@
                     "persona": {
                         "type": "string",
                         "enum": ["matrix", "advisor", "coding", "server"],
-                        "description": "Optional target persona toolbox to inspect or manage. Omit to manage the current persona."
+                        "description": "Optional target persona toolbox to inspect or manage. Omit to manage the current persona. Matrix and 司 may set this for cross-persona governance; other personas should omit it and manage only themselves."
                     },
                     "tool_ids": {
                         "type": "array",

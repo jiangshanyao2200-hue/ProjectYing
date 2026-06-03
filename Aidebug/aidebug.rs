@@ -26,6 +26,7 @@ pub const EVENTS_FILE_NAME: &str = "events.jsonl";
 pub const STATUS_FILE_NAME: &str = "status.json";
 pub const HEALTH_FILE_NAME: &str = "health.json";
 pub const LATEST_REPLY_FILE_NAME: &str = "latest_reply.txt";
+pub const PERSONA_DISPATCH_FILE_NAME: &str = "persona_dispatch.jsonl";
 pub const PERFORMANCE_FILE_NAME: &str = "performance.json";
 pub const TOOL_PROJECTION_SNAPSHOT_FILE_NAME: &str = "tool_projection_snapshot.json";
 pub const PROTOCOL_VERSION: u32 = 2;
@@ -37,9 +38,12 @@ pub const DYNAMIC_ROLE_PROTOCOL_SUMMARY: &str = "DynamicRoleContract v1; Matrix-
 pub const CONFIG_GOVERNANCE_PROTOCOL_SUMMARY: &str = "tool_manage.settings governance v1; Matrix-only unified settings route manages KB tool-output budgets, Matrix system experience parameters, theme, and static persona provider/model routing; dynamic roles stay under role/context_governance routing; context_governance_set remains separate for advisor_managed/self_compact thresholds";
 pub const TOOL_PROJECTION_PROTOCOL_SUMMARY: &str = "ToolProjectionSnapshot v1; read-only reconciliation of builtin personas and dynamic roles covering default_tools, governance auto tools, observe/toolbox state, provider exposure, callable sets, and per-tool reasons";
 const README_FILE_NAME: &str = "README.md";
-const EVENTS_MAX_BYTES: u64 = 8 * 1024 * 1024;
-const EVENTS_RETAIN_BYTES: usize = 4 * 1024 * 1024;
-const README_TEXT: &str = "# Aidebug\n\nProjectYing AI 调试口。\n\n- `events.jsonl`：唯一 AI 调试事件流，按 `stream` 区分 interface/request/tool/department/alert；超过 8 MiB 自动保留尾部约 4 MiB。\n- `status.json`：当前运行状态快照，由运行时生成，包含协议版本、persona、当前 provider/model、context / memory 布局、动态角色协议与治理摘要、工具输出协议、配置治理协议、调度协议摘要与活跃请求观测字段。\n- `health.json`：链路健康侦测快照，由 `status.json` 同源派生，按 persona、动态角色治理、communication、memory、context、token、tool、config、UI、scheduler、tool_projection 链路给出状态、分数和证据。\n- `performance.json`：AI 调试性能快照，记录请求/工具耗时、网络阶段、UI 慢帧、上下文体积、重试、失败与阈值告警；`recent_network` 可区分线程启动、HTTP POST、headers、首个 SSE event 与 stream 结束，`recent_ui` 记录慢 draw/tick。\n- `tool_projection_snapshot.json`：只读工具投影对账快照，按 persona/role 列出 default_tools、governance 自动工具、observe/toolbox 状态、provider 暴露、可调用集合与每个工具的原因。\n- `latest_reply.txt`：最近一次 AI 正文回执，由运行时生成。\n- `inbox/`：外部调试投递入口，放入 `.txt` / `.md` / `.json` 即可让程序按当前或指定 persona 发送。\n- `processed/`：已消费的调试投递。\n- `failed/`：无法消费或发送的调试投递。\n\nTXT 格式可选首行：`persona: matrix|advisor|coding|server`。\nJSON 格式：`{\"persona\":\"server\",\"debug_session_id\":\"dbg-demo\",\"text\":\"任务内容\"}`。\nAidebug inbox 投递会作为目标 persona 的模型输入发送，但聊天 UI 统一显示为 `Aidebug / 开发者AI调试` 调试来源，不混入普通用户身份。\n当前 persona 清单：Matrix · 萤、司、Coding · 绫、Server · 御。\n\nAI 排障入口：先读 `status.json` 判断请求状态、司队列、动态角色 governance、活跃角色 contract、活跃请求是否已有工具调用、thinking/text 规模与协议摘要，再读 `health.json` 查看各链路状态/分数/证据，再按 `stream` / `data.department` / `performance.json.alerts` / `performance.json.recent_network` / `performance.json.recent_ui` 过滤问题；工具大输出优先用 `tool.output.externalized` 与 `memory_read target=output` 查 `memory/output` 引用，动态任务按 `scheduler.task.*` 判断 started/progress/done/timeout/cancelled/skipped。\n";
+const LATEST_REPLY_DIR_NAME: &str = "latest_reply";
+const EVENTS_MAX_BYTES: u64 = 4 * 1024 * 1024;
+const EVENTS_RETAIN_BYTES: usize = 1024 * 1024;
+const PERSONA_DISPATCH_MAX_BYTES: u64 = 1024 * 1024;
+const PERSONA_DISPATCH_RETAIN_BYTES: usize = 256 * 1024;
+const README_TEXT: &str = "# Aidebug\n\nProjectYing AI 调试口。\n\n- `events.jsonl`：唯一 AI 调试事件流，按 `stream` 区分 interface/request/tool/department/alert；超过 4 MiB 自动保留尾部约 1 MiB。UI 慢帧明细主要写入 `performance.json`，避免观测日志本身拖慢 TUI。\n- `status.json`：当前运行状态快照，由运行时生成，包含协议版本、persona、当前 provider/model、context / memory 布局、动态角色协议与治理摘要、工具输出协议、配置治理协议、调度协议摘要与活跃请求观测字段。\n- `health.json`：链路健康侦测快照，由 `status.json` 同源派生，按 persona、动态角色治理、communication、memory、context、token、tool、config、UI、scheduler、tool_projection 链路给出状态、分数和证据。\n- `performance.json`：AI 调试性能快照，记录请求/工具耗时、网络阶段、UI 慢帧、上下文体积、重试、失败与阈值告警；`recent_network` 可区分线程启动、HTTP POST、headers、首个 SSE event 与 stream 结束，`recent_ui` 记录慢 draw/tick。\n- `tool_projection_snapshot.json`：只读工具投影对账快照，按 persona/role 列出 default_tools、governance 自动工具、observe/toolbox 状态、provider 暴露、可调用集合与每个工具的原因。\n- `persona_dispatch.jsonl`：`persona_manage` 派单生命周期事件流，记录 queued/requeued/delivered/running/completed/failed/skipped。\n- `latest_reply.txt`：最近一次 AI 正文回执；`latest_reply/<Persona>.txt` 保留每个 persona 的最近回执，避免互相覆盖。\n- `inbox/`：外部调试投递入口，放入 `.txt` / `.md` / `.json` 即可让程序按当前或指定 persona 发送。\n- `processed/`：已消费的调试投递。\n- `failed/`：无法消费或发送的调试投递。\n\nTXT 格式可选首行：`persona: matrix|advisor|coding|server`。\nJSON 格式：`{\"persona\":\"server\",\"debug_session_id\":\"dbg-demo\",\"text\":\"任务内容\"}`。\nAidebug inbox 投递会作为目标 persona 的模型输入发送，但聊天 UI 统一显示为 `Aidebug / 开发者AI调试` 调试来源，不混入普通用户身份。\n当前 persona 清单：Matrix · 萤、司、Coding · 绫、Server · 御。\n\nAI 排障入口：先读 `status.json` 判断请求状态、司队列、动态角色 governance、活跃角色 contract、活跃请求是否已有工具调用、thinking/text 规模与协议摘要，再读 `health.json` 查看各链路状态/分数和证据；persona 调度链路读 `persona_dispatch.jsonl` 或 `persona_manage.observe` 的 recent_persona_dispatch；再按 `stream` / `data.department` / `performance.json.alerts` / `performance.json.recent_network` / `performance.json.recent_ui` 过滤问题；工具大输出优先用 `tool.output.externalized` 与 `memory_read target=output` 查 `memory/output` 引用，动态任务按 `scheduler.task.*` 判断 started/progress/done/timeout/cancelled/skipped。\n";
 const PERF_RECENT_LIMIT: usize = 80;
 const PERF_ALERT_LIMIT: usize = 80;
 const PERF_CONTEXT_WARN_CHARS: u64 = 128 * 1024;
@@ -54,8 +58,10 @@ const PERF_UI_DRAW_SLOW_MS: u64 = 50;
 const PERF_UI_TICK_SLOW_MS: u64 = 120;
 const PERF_TOOL_OUTPUT_WARN_CHARS: u64 = 12_000;
 const PERF_TOOL_INPUT_WARN_CHARS: u64 = 8_000;
-const PERF_SNAPSHOT_WRITE_THROTTLE_MS: u64 = 250;
+const PERF_SNAPSHOT_WRITE_THROTTLE_MS: u64 = 1000;
 const PERF_INTERFACE_SNAPSHOT_WRITE_THROTTLE_MS: u64 = 1000;
+#[cfg(not(test))]
+const HEALTH_SNAPSHOT_WRITE_THROTTLE_MS: u64 = 5_000;
 const TOOL_PROJECTION_SNAPSHOT_REFRESH_THROTTLE_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,12 +343,23 @@ fn events_write_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn persona_dispatch_write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn performance_lock() -> &'static Mutex<PerformanceRuntime> {
     static LOCK: OnceLock<Mutex<PerformanceRuntime>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(PerformanceRuntime::default()))
 }
 
 fn tool_projection_refresh_lock() -> &'static Mutex<BTreeMap<PathBuf, u64>> {
+    static LOCK: OnceLock<Mutex<BTreeMap<PathBuf, u64>>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+#[cfg(not(test))]
+fn health_snapshot_write_lock() -> &'static Mutex<BTreeMap<PathBuf, u64>> {
     static LOCK: OnceLock<Mutex<BTreeMap<PathBuf, u64>>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
@@ -560,6 +577,18 @@ pub fn runtime_root(project_root: &Path) -> PathBuf {
     root(project_root)
 }
 
+pub fn persona_dispatch_path(project_root: &Path) -> PathBuf {
+    runtime_root(project_root).join(PERSONA_DISPATCH_FILE_NAME)
+}
+
+fn latest_reply_dir(project_root: &Path) -> PathBuf {
+    runtime_root(project_root).join(LATEST_REPLY_DIR_NAME)
+}
+
+fn latest_reply_persona_path(project_root: &Path, persona: &str) -> PathBuf {
+    latest_reply_dir(project_root).join(format!("{}.txt", safe_file_stem(persona)))
+}
+
 pub fn inbox_dir(project_root: &Path) -> PathBuf {
     runtime_root(project_root).join(INBOX_DIR_NAME)
 }
@@ -578,12 +607,14 @@ pub fn prepare_layout(project_root: &Path) -> Result<()> {
         inbox_dir(project_root),
         processed_dir(project_root),
         failed_dir(project_root),
+        latest_reply_dir(project_root),
     ] {
         fs::create_dir_all(&dir)
             .with_context(|| format!("创建 Aidebug 目录失败：{}", dir.display()))?;
     }
     write_readme(project_root)?;
     ensure_event_files(project_root)?;
+    ensure_persona_dispatch_file(project_root)?;
     ensure_performance_file(project_root)?;
     write_interface_event(
         project_root,
@@ -666,6 +697,9 @@ pub fn write_status(project_root: &Path, snapshot: &DebugStatusSnapshot) -> Resu
     let text = serde_json::to_string_pretty(snapshot)?;
     fs::write(&path, text)
         .with_context(|| format!("写入 Aidebug status 失败：{}", path.display()))?;
+    if !should_write_health_snapshot(project_root)? {
+        return Ok(());
+    }
     let app_root = crate::app_project_root();
     if project_root == app_root.as_path() {
         let projection_refresh_error = refresh_tool_projection_snapshot_for_status(project_root)
@@ -683,6 +717,32 @@ pub fn write_status(project_root: &Path, snapshot: &DebugStatusSnapshot) -> Resu
         write_health(project_root, &derive_health_snapshot(snapshot)?)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn should_write_health_snapshot(_project_root: &Path) -> Result<bool> {
+    Ok(true)
+}
+
+#[cfg(not(test))]
+fn should_write_health_snapshot(project_root: &Path) -> Result<bool> {
+    let health_path = runtime_root(project_root).join(HEALTH_FILE_NAME);
+    if !health_path.exists() {
+        return Ok(true);
+    }
+    let now = unix_ms();
+    let key = project_root.to_path_buf();
+    let mut guard = health_snapshot_write_lock()
+        .lock()
+        .map_err(|err| anyhow::anyhow!("Aidebug health 写锁已损坏：{err}"))?;
+    if guard
+        .get(&key)
+        .is_some_and(|last| now.saturating_sub(*last) < HEALTH_SNAPSHOT_WRITE_THROTTLE_MS)
+    {
+        return Ok(false);
+    }
+    guard.insert(key, now);
+    Ok(true)
 }
 
 pub fn write_health(project_root: &Path, snapshot: &DebugHealthSnapshot) -> Result<()> {
@@ -1514,14 +1574,33 @@ pub fn write_latest_reply(project_root: &Path, persona: &str, text: &str) -> Res
     let dir = runtime_root(project_root);
     fs::create_dir_all(&dir)
         .with_context(|| format!("创建 Aidebug 目录失败：{}", dir.display()))?;
-    let path = dir.join(LATEST_REPLY_FILE_NAME);
     let body = format!(
         "persona: {persona}\nts_ms: {}\n\n{}",
         unix_ms(),
         text.trim()
     );
-    fs::write(&path, body)
-        .with_context(|| format!("写入 Aidebug latest reply 失败：{}", path.display()))?;
+    let global_path = dir.join(LATEST_REPLY_FILE_NAME);
+    crate::write_text_file_atomically_shared(
+        global_path.as_path(),
+        body.as_str(),
+        "Aidebug latest reply",
+        LATEST_REPLY_FILE_NAME,
+        "Aidebug latest reply 路径缺少父目录",
+        "创建 Aidebug latest reply 目录失败",
+    )?;
+    let persona_path = latest_reply_persona_path(project_root, persona);
+    let persona_file_name = persona_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(LATEST_REPLY_FILE_NAME);
+    crate::write_text_file_atomically_shared(
+        persona_path.as_path(),
+        body.as_str(),
+        "Aidebug persona latest reply",
+        persona_file_name,
+        "Aidebug persona latest reply 路径缺少父目录",
+        "创建 Aidebug persona latest reply 目录失败",
+    )?;
     write_interface_event(
         project_root,
         "aidebug.latest_reply",
@@ -1530,6 +1609,96 @@ pub fn write_latest_reply(project_root: &Path, persona: &str, text: &str) -> Res
             "chars": text.chars().count(),
         }),
     )
+}
+
+pub fn write_persona_dispatch_event(project_root: &Path, data: Value) -> Result<()> {
+    let dir = runtime_root(project_root);
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("创建 Aidebug 目录失败：{}", dir.display()))?;
+    let path = persona_dispatch_path(project_root);
+    let ts_ms = unix_ms();
+    let mut record = match data {
+        Value::Object(map) => map,
+        other => {
+            let mut map = serde_json::Map::new();
+            map.insert("data".to_string(), other);
+            map
+        }
+    };
+    record.insert("ts_ms".to_string(), json!(ts_ms));
+    if !record.contains_key("phase") {
+        record.insert("phase".to_string(), Value::String("unknown".to_string()));
+    }
+    if !record.contains_key("status") {
+        let status = record
+            .get("phase")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        record.insert("status".to_string(), Value::String(status));
+    }
+    let line = format!("{}\n", Value::Object(record));
+    let guard = persona_dispatch_write_lock()
+        .lock()
+        .map_err(|err| anyhow::anyhow!("Aidebug persona dispatch 写锁已损坏：{err}"))?;
+    prune_persona_dispatch_file_if_needed(path.as_path())?;
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("打开 Aidebug persona dispatch 失败：{}", path.display()))?;
+    file.write_all(line.as_bytes())?;
+    drop(file);
+    drop(guard);
+    Ok(())
+}
+
+pub fn persona_dispatch_observation(
+    project_root: &Path,
+    persona: &str,
+    role_id: Option<&str>,
+    include_recent: usize,
+) -> Result<String> {
+    let path = persona_dispatch_path(project_root);
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("读取 Aidebug persona dispatch 失败：{}", path.display()))?;
+    let persona_key = normalize_persona_name(persona);
+    let role_key = role_id.map(normalize_persona_name);
+    let mut lines = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        if !persona_dispatch_matches(&value, persona_key.as_str(), role_key.as_deref()) {
+            continue;
+        }
+        lines.push(value);
+    }
+    if lines.is_empty() {
+        return Ok(String::new());
+    }
+    let limit = include_recent.clamp(1, 24);
+    let start = lines.len().saturating_sub(limit);
+    let mut out = vec![format!(
+        "recent_persona_dispatch: {}",
+        if let Some(role_id) = role_id {
+            format!("{persona}/{role_id}")
+        } else {
+            persona.to_string()
+        }
+    )];
+    for value in lines.iter().skip(start) {
+        out.push(format_persona_dispatch_observation_line(value));
+    }
+    Ok(out.join("\n"))
 }
 
 pub fn write_interface_event(project_root: &Path, event: &str, data: Value) -> Result<()> {
@@ -1559,11 +1728,16 @@ pub fn write_ai_event(project_root: &Path, stream: &str, event: &str, data: Valu
         .with_context(|| format!("创建 Aidebug 目录失败：{}", dir.display()))?;
     let path = dir.join(EVENTS_FILE_NAME);
     let ts_ms = unix_ms();
+    let _ = observe_performance_event(project_root, ts_ms, stream, event, &data);
+    if !should_persist_ai_event(stream, event) {
+        return Ok(());
+    }
+    let data = compact_ai_event_data(stream, event, &data);
     let record = json!({
         "ts_ms": ts_ms,
         "stream": stream,
         "event": event,
-        "data": data.clone(),
+        "data": data,
     });
     let line = format!("{record}\n");
     let guard = events_write_lock()
@@ -1579,8 +1753,178 @@ pub fn write_ai_event(project_root: &Path, stream: &str, event: &str, data: Valu
     file.write_all(line.as_bytes())?;
     drop(file);
     drop(guard);
-    let _ = observe_performance_event(project_root, ts_ms, stream, event, &data);
     Ok(())
+}
+
+fn persona_dispatch_matches(data: &Value, persona_key: &str, role_key: Option<&str>) -> bool {
+    let source_persona = value_opt_string(data, "source_persona")
+        .map(|value| normalize_persona_name(value.as_str()));
+    let target_persona = value_opt_string(data, "target_persona")
+        .map(|value| normalize_persona_name(value.as_str()));
+    if let Some(role_key) = role_key {
+        let source_role = value_opt_string(data, "source_role")
+            .map(|value| normalize_persona_name(value.as_str()));
+        let target_role = value_opt_string(data, "target_role")
+            .map(|value| normalize_persona_name(value.as_str()));
+        return source_role.as_deref() == Some(role_key)
+            || target_role.as_deref() == Some(role_key);
+    }
+    source_persona.as_deref() == Some(persona_key) || target_persona.as_deref() == Some(persona_key)
+}
+
+fn format_persona_dispatch_party(
+    data: &Value,
+    persona_key: &str,
+    role_key: &str,
+    role_label_key: &str,
+) -> String {
+    let persona = value_opt_string(data, persona_key).unwrap_or_else(|| "?".to_string());
+    let Some(role) = value_opt_string(data, role_key) else {
+        return persona;
+    };
+    let label = value_opt_string(data, role_label_key);
+    match label {
+        Some(label) if !label.is_empty() && label != role => format!("{persona}/{role}({label})"),
+        _ => format!("{persona}/{role}"),
+    }
+}
+
+fn format_persona_dispatch_observation_line(data: &Value) -> String {
+    let phase = value_opt_string(data, "phase")
+        .or_else(|| value_opt_string(data, "status"))
+        .unwrap_or_else(|| "unknown".to_string());
+    let id = value_opt_string(data, "id").unwrap_or_else(|| "(no-id)".to_string());
+    let action = value_opt_string(data, "action").unwrap_or_else(|| "(unknown)".to_string());
+    let source =
+        format_persona_dispatch_party(data, "source_persona", "source_role", "source_role_label");
+    let target =
+        format_persona_dispatch_party(data, "target_persona", "target_role", "target_role_label");
+    let mut parts = vec![
+        format!("- {phase}"),
+        format!("id:{id}"),
+        format!("action:{action}"),
+        format!("{source} -> {target}"),
+    ];
+    if let Some(priority) = value_opt_string(data, "priority") {
+        parts.push(format!("priority:{priority}"));
+    } else if data.get("interrupt_active").and_then(Value::as_bool) == Some(true) {
+        parts.push("priority:urgent".to_string());
+    }
+    if let Some(request_id) = value_u64(data, "request_id") {
+        parts.push(format!("request_id:{request_id}"));
+    }
+    if let Some(provider) = value_opt_string(data, "provider") {
+        parts.push(format!("provider:{provider}"));
+    }
+    if let Some(model) = value_opt_string(data, "model") {
+        parts.push(format!("model:{model}"));
+    }
+    if let Some(endpoint) = value_opt_string(data, "endpoint") {
+        parts.push(format!("url:{endpoint}"));
+    }
+    if let Some(error_kind) = value_opt_string(data, "error_kind") {
+        parts.push(format!("error_kind:{error_kind}"));
+    }
+    if let Some(note) = value_opt_string(data, "note") {
+        parts.push(format!(
+            "note:{}",
+            truncate_event_preview(note.as_str(), 120)
+        ));
+    }
+    if let Some(error) = value_opt_string(data, "error") {
+        parts.push(format!(
+            "error:{}",
+            truncate_event_preview(error.as_str(), 160)
+        ));
+    }
+    for key in ["text_chars", "thinking_chars", "plan_chars", "output_chars"] {
+        if let Some(value) = value_u64(data, key) {
+            parts.push(format!("{key}:{value}"));
+        }
+    }
+    parts.join(" · ")
+}
+
+fn should_persist_ai_event(stream: &str, event: &str) -> bool {
+    !matches!((stream, event), ("interface", "ui.draw" | "ui.tick"))
+}
+
+fn compact_ai_event_data(stream: &str, event: &str, data: &Value) -> Value {
+    if matches!((stream, event), ("tool", "tool.envelope.created")) {
+        return compact_tool_envelope_event(data);
+    }
+    data.clone()
+}
+
+fn compact_tool_envelope_event(data: &Value) -> Value {
+    let envelope = data.get("envelope");
+    json!({
+        "persona": data.get("persona").cloned().unwrap_or(Value::Null),
+        "tool_name": data.get("tool_name").cloned().unwrap_or(Value::Null),
+        "call_id": data.get("call_id").cloned().unwrap_or(Value::Null),
+        "tool_id": envelope.and_then(|item| item.get("tool_id")).cloned().unwrap_or(Value::Null),
+        "run_id": envelope.and_then(|item| item.get("run_id")).cloned().unwrap_or(Value::Null),
+        "status": envelope.and_then(|item| item.get("status")).cloned().unwrap_or(Value::Null),
+        "action": envelope.and_then(|item| item.get("action")).cloned().unwrap_or(Value::Null),
+        "brief": envelope.and_then(|item| item.get("brief")).and_then(Value::as_str).map(|value| truncate_event_preview(value, 160)).unwrap_or_default(),
+        "input_summary": compact_envelope_summary(envelope.and_then(|item| item.get("input_summary"))),
+        "output_summary": compact_envelope_summary(envelope.and_then(|item| item.get("output_summary"))),
+        "output_ref_count": envelope
+            .and_then(|item| item.get("output_refs"))
+            .and_then(Value::as_array)
+            .map(|items| items.len())
+            .unwrap_or_default(),
+        "artifact_count": envelope
+            .and_then(|item| item.get("artifacts"))
+            .and_then(Value::as_array)
+            .map(|items| items.len())
+            .unwrap_or_default(),
+        "elapsed_ms": envelope
+            .and_then(|item| item.get("metrics"))
+            .and_then(|metrics| metrics.get("elapsed_ms"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "error": envelope
+            .and_then(|item| item.get("error"))
+            .and_then(Value::as_str)
+            .map(|value| truncate_event_preview(value, 240))
+            .unwrap_or_default(),
+    })
+}
+
+fn compact_envelope_summary(summary: Option<&Value>) -> Value {
+    let Some(summary) = summary else {
+        return Value::Null;
+    };
+    json!({
+        "chars": summary.get("chars").cloned().unwrap_or(Value::Null),
+        "bytes": summary.get("bytes").cloned().unwrap_or(Value::Null),
+        "lines": summary.get("lines").cloned().unwrap_or(Value::Null),
+        "exit_code": summary.get("exit_code").cloned().unwrap_or(Value::Null),
+        "archived": summary.get("archived").cloned().unwrap_or(Value::Null),
+        "toolmemory_entry_id": summary.get("toolmemory_entry_id").cloned().unwrap_or(Value::Null),
+        "preview": summary
+            .get("preview")
+            .and_then(Value::as_str)
+            .map(|value| truncate_event_preview(value, 240))
+            .unwrap_or_default(),
+    })
+}
+
+fn truncate_event_preview(text: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    let mut truncated = false;
+    for (index, ch) in text.chars().enumerate() {
+        if index >= max_chars {
+            truncated = true;
+            break;
+        }
+        out.push(ch);
+    }
+    if truncated {
+        out.push('…');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -2122,6 +2466,8 @@ fn observe_ui_event(runtime: &mut PerformanceRuntime, ts_ms: u64, event: &str, d
                 "elapsed_ms": elapsed_ms,
                 "threshold_ms": threshold_ms,
                 "active_persona": value_string(data, "active_persona"),
+                "active_request_persona": value_opt_string(data, "active_request_persona"),
+                "active_request_role_id": value_opt_string(data, "active_request_role_id"),
                 "message": "UI 主循环阶段耗时偏高；若网络阶段正常但体感慢，优先检查渲染缓存、聊天消息量和状态轮询",
             }),
         );
@@ -2356,6 +2702,43 @@ fn prune_events_file_if_needed(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn prune_persona_dispatch_file_if_needed(path: &Path) -> Result<()> {
+    let Ok(meta) = fs::metadata(path) else {
+        return Ok(());
+    };
+    if meta.len() <= PERSONA_DISPATCH_MAX_BYTES {
+        return Ok(());
+    }
+    let bytes = fs::read(path).with_context(|| {
+        format!(
+            "读取 Aidebug persona dispatch 以裁剪失败：{}",
+            path.display()
+        )
+    })?;
+    let keep_from = bytes.len().saturating_sub(PERSONA_DISPATCH_RETAIN_BYTES);
+    let start = if keep_from == 0 {
+        0
+    } else {
+        bytes[keep_from..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|offset| keep_from.saturating_add(offset).saturating_add(1))
+            .unwrap_or(keep_from)
+            .min(bytes.len())
+    };
+    let marker = json!({
+        "ts_ms": unix_ms(),
+        "phase": "aidebug.persona_dispatch_pruned",
+        "status": "pruned",
+        "retained_bytes": bytes.len().saturating_sub(start),
+    });
+    let mut retained = format!("{marker}\n").into_bytes();
+    retained.extend_from_slice(&bytes[start..]);
+    fs::write(path, retained)
+        .with_context(|| format!("裁剪 Aidebug persona dispatch 失败：{}", path.display()))?;
+    Ok(())
+}
+
 fn ensure_event_files(project_root: &Path) -> Result<()> {
     let dir = runtime_root(project_root);
     fs::create_dir_all(&dir)
@@ -2366,6 +2749,15 @@ fn ensure_event_files(project_root: &Path) -> Result<()> {
             .with_context(|| format!("创建 Aidebug 事件文件失败：{}", path.display()))?;
     }
     Ok(())
+}
+
+fn ensure_persona_dispatch_file(project_root: &Path) -> Result<()> {
+    let path = persona_dispatch_path(project_root);
+    if path.exists() {
+        return Ok(());
+    }
+    fs::write(&path, "")
+        .with_context(|| format!("创建 Aidebug persona dispatch 文件失败：{}", path.display()))
 }
 
 fn parse_inbox_message(path: &Path) -> Result<DebugInboxMessage> {
@@ -2438,6 +2830,27 @@ fn parse_text_inbox(raw: &str) -> (Option<String>, String) {
 
 fn normalize_persona_name(value: &str) -> String {
     value.trim().to_ascii_lowercase().replace('_', "-")
+}
+
+fn safe_file_stem(value: &str) -> String {
+    let stem = value
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    if stem.is_empty() {
+        "unknown".to_string()
+    } else {
+        stem
+    }
 }
 
 fn normalize_debug_session_id(value: &str) -> String {
@@ -2765,6 +3178,75 @@ mod tests {
 
         assert_eq!(message.persona.as_deref(), Some("coding"));
         assert_eq!(message.text, "检查 cargo check");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn latest_reply_keeps_global_and_per_persona_files() {
+        let root = unique_project_root("latest-reply");
+        prepare_layout(root.as_path()).expect("prepare layout");
+
+        write_latest_reply(root.as_path(), "Matrix", "matrix reply").expect("write matrix");
+        write_latest_reply(root.as_path(), "Coding", "coding reply").expect("write coding");
+
+        let global = fs::read_to_string(runtime_root(root.as_path()).join(LATEST_REPLY_FILE_NAME))
+            .expect("read global");
+        assert!(global.contains("persona: Coding"));
+        assert!(global.contains("coding reply"));
+
+        let matrix = fs::read_to_string(latest_reply_persona_path(root.as_path(), "Matrix"))
+            .expect("read matrix");
+        let coding = fs::read_to_string(latest_reply_persona_path(root.as_path(), "Coding"))
+            .expect("read coding");
+        assert!(matrix.contains("persona: Matrix"));
+        assert!(matrix.contains("matrix reply"));
+        assert!(coding.contains("persona: Coding"));
+        assert!(coding.contains("coding reply"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn persona_dispatch_observation_filters_persona_and_role() {
+        let root = unique_project_root("dispatch-observe");
+        prepare_layout(root.as_path()).expect("prepare layout");
+
+        write_persona_dispatch_event(
+            root.as_path(),
+            json!({
+                "id": "persona-1",
+                "phase": "queued",
+                "status": "queued",
+                "action": "send",
+                "source_persona": "Matrix",
+                "target_persona": "Coding",
+                "target_role": "worker",
+                "target_role_label": "工",
+            }),
+        )
+        .expect("write coding dispatch");
+        write_persona_dispatch_event(
+            root.as_path(),
+            json!({
+                "id": "persona-2",
+                "phase": "completed",
+                "status": "completed",
+                "action": "send",
+                "source_persona": "runtime",
+                "target_persona": "Server",
+            }),
+        )
+        .expect("write server dispatch");
+
+        let coding = persona_dispatch_observation(root.as_path(), "Coding", None, 8)
+            .expect("observe coding");
+        assert!(coding.contains("recent_persona_dispatch"));
+        assert!(coding.contains("persona-1"));
+        assert!(coding.contains("Matrix -> Coding/worker"));
+        assert!(!coding.contains("persona-2"));
+
+        let worker = persona_dispatch_observation(root.as_path(), "Coding", Some("worker"), 8)
+            .expect("observe worker");
+        assert!(worker.contains("persona-1"));
         let _ = fs::remove_dir_all(root);
     }
 

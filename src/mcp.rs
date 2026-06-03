@@ -127,6 +127,8 @@ const TERMINAL_AUDIT_INTERVAL_SECS_MIN: u64 = 30;
 const TERMINAL_AUDIT_INTERVAL_SECS_MAX: u64 = 3_600;
 const SERVER_SSH_ASKPASS_PASSWORD_ENV: &str = "PROJECTYING_SERVER_SSH_PASSWORD";
 const SERVER_SSH_ASKPASS_SCRIPT: &str = "server-ssh-askpass.sh";
+const SERVER_SPLIT_SUFFIXES: [&str; crate::roles::SERVER_SPLIT_ROLE_LIMIT] =
+    ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
 static NEXT_PERSONA_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -768,6 +770,7 @@ impl ToolContractRegistry {
         };
         ensure_tool(items, persona_manage_schema());
         ensure_tool(items, server_manage_schema());
+        ensure_tool(items, server_split_schema());
         ensure_tool(items, browser_schema());
         ensure_tool(items, draw_image_schema());
         ensure_tool(items, context_manage_schema());
@@ -810,6 +813,9 @@ impl ToolContractRegistry {
             }
             return ToolProjectionState::Hidden;
         }
+        if name == "tool_manage" {
+            return ToolProjectionState::Expanded;
+        }
         if name == "browser"
             && matches!(
                 persona.tool_profile(),
@@ -817,6 +823,9 @@ impl ToolContractRegistry {
             )
         {
             return browser_tool_projection_state(persona);
+        }
+        if name == "server_split" && !matches!(persona, crate::PersonaKind::Server) {
+            return ToolProjectionState::Closed;
         }
         match persona.tool_profile() {
             crate::persona::PersonaToolProfile::Governance => {
@@ -1362,9 +1371,15 @@ fn focus_persona_tool_projection_state(
             ToolProjectionState::Expanded
         }
         "server_manage" => ToolProjectionState::Hidden,
+        "server_split" if matches!(persona, crate::PersonaKind::Server) => {
+            ToolProjectionState::Expanded
+        }
+        "server_split" => ToolProjectionState::Closed,
         "command" | "view_image" | "draw_image" | "web_search" | "apply_patch" | "ask_user"
-        | "update_plan" | "focus_mode" | "persona_manage" | "memory_check" | "memory_read"
-        | "pty_run" | "pty_wait" | "context_summary" => ToolProjectionState::Expanded,
+        | "update_plan" | "focus_mode" | "persona_manage" | "tool_manage" | "memory_check"
+        | "memory_read" | "pty_run" | "pty_wait" | "context_summary" => {
+            ToolProjectionState::Expanded
+        }
         "context_compact" | "context_vision" => ToolProjectionState::Closed,
         "pty_input" | "pty_list" | "pty_kill" => ToolProjectionState::Closed,
         _ => ToolProjectionState::Hidden,
@@ -1579,6 +1594,153 @@ fn server_manage_schema() -> Value {
                             }
                         },
                         "required": ["cmd"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["action"],
+            "additionalProperties": false
+        }
+    })
+}
+
+fn server_split_schema() -> Value {
+    json!({
+        "type": "function",
+        "name": "server_split",
+        "description": "Server-only tool for splitting Server · 御 into a managed 御 network. Each split is a Server-based dynamic role with its own label, context, runtime, tools, and persona communication path. Use it to create/list/communicate/close up to 10 parallel 御 workers for multi-server defense, management, or paired server debugging. Closing a split disables it and preserves context/memory so existing runtime continuity is not destroyed.",
+        "strict": false,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "list",
+                        "status",
+                        "split",
+                        "create",
+                        "add",
+                        "split_batch",
+                        "create_batch",
+                        "batch",
+                        "send",
+                        "communicate",
+                        "message",
+                        "dispatch",
+                        "close",
+                        "remove",
+                        "delete",
+                        "close_batch",
+                        "close_all"
+                    ],
+                    "description": "Network action. `split` creates or reopens one 御 slot; `split_batch` creates/reopens many; `send/communicate` queues a message to one or more split roles; `close` disables selected split roles; `close_all` disables all active split roles; `list` reports the network."
+                },
+                "brief": {
+                    "type": "string",
+                    "description": "Optional short Chinese purpose sentence for UI display."
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Optional number of split roles to create for split_batch. Max active split roles is 10."
+                },
+                "split_id": {
+                    "type": "string",
+                    "description": "Optional target split id or suffix, such as server_yu_a, 御A, or A."
+                },
+                "split_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional target split ids, labels, or suffixes for batch communicate/close."
+                },
+                "target": {
+                    "type": "string",
+                    "description": "Alias of split_id for communicate/close."
+                },
+                "targets": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Alias of split_ids for communicate/close."
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Optional split label. Examples: 御A, A. If omitted the next A-J slot is used."
+                },
+                "labels": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional labels for batch creation."
+                },
+                "task": {
+                    "type": "string",
+                    "description": "Optional task to assign immediately after splitting, or message body for communicate."
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Alias of task for communicate or immediate split assignment."
+                },
+                "tasks": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional per-split tasks for split_batch."
+                },
+                "server_id": {
+                    "type": "string",
+                    "description": "Optional server selector to include in the split assignment."
+                },
+                "server_name": {
+                    "type": "string",
+                    "description": "Optional server name selector to include in the split assignment."
+                },
+                "server_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional per-split server selectors for split_batch."
+                },
+                "priority": {
+                    "type": "string",
+                    "enum": ["normal", "urgent"],
+                    "description": "Optional communication priority. urgent interrupts the target split request before injecting the message."
+                },
+                "all": {
+                    "type": "boolean",
+                    "description": "For communicate/close, target all active split roles."
+                },
+                "items": {
+                    "type": "array",
+                    "description": "Optional per-split batch items.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "split_id": {
+                                "type": "string",
+                                "description": "Optional target split id or suffix."
+                            },
+                            "label": {
+                                "type": "string",
+                                "description": "Optional split label, such as 御A."
+                            },
+                            "task": {
+                                "type": "string",
+                                "description": "Optional task for this split."
+                            },
+                            "message": {
+                                "type": "string",
+                                "description": "Alias of task for this split."
+                            },
+                            "server_id": {
+                                "type": "string",
+                                "description": "Optional server selector for this split."
+                            },
+                            "server_name": {
+                                "type": "string",
+                                "description": "Optional server name selector for this split."
+                            },
+                            "brief": {
+                                "type": "string",
+                                "description": "Optional short Chinese purpose sentence for this split."
+                            }
+                        },
                         "additionalProperties": false
                     }
                 }
@@ -2854,6 +3016,64 @@ struct ServerManageArgs {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct ServerSplitArgs {
+    #[serde(default)]
+    action: String,
+    #[serde(default)]
+    brief: Option<String>,
+    #[serde(default)]
+    count: Option<usize>,
+    #[serde(default)]
+    split_id: Option<String>,
+    #[serde(default)]
+    split_ids: Vec<String>,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    targets: Vec<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    labels: Vec<String>,
+    #[serde(default)]
+    task: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    tasks: Vec<String>,
+    #[serde(default)]
+    server_id: Option<String>,
+    #[serde(default)]
+    server_name: Option<String>,
+    #[serde(default)]
+    server_ids: Vec<String>,
+    #[serde(default)]
+    priority: Option<String>,
+    #[serde(default)]
+    all: bool,
+    #[serde(default)]
+    items: Vec<ServerSplitItemArgs>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ServerSplitItemArgs {
+    #[serde(default)]
+    split_id: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    task: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    server_id: Option<String>,
+    #[serde(default)]
+    server_name: Option<String>,
+    #[serde(default)]
+    brief: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct ServerDispatchArgs {
     #[serde(default)]
     server_id: Option<String>,
@@ -3772,6 +3992,58 @@ fn apply_persona_schema_constraints(tools: &mut Value, persona: crate::PersonaKi
     };
     for tool in items {
         if tool.get("name").and_then(Value::as_str) != Some("persona_manage") {
+            if tool.get("name").and_then(Value::as_str) == Some("tool_manage") {
+                tool["description"] = Value::String(
+                    "Self-service ProjectYing toolbox manager for the current persona. Use it to list, reload, open, close, pin, or unpin tools in your own toolbox. Cross-persona toolbox changes and governance actions stay with Matrix/司."
+                        .to_string(),
+                );
+                if let Some(action) = tool.pointer_mut("/parameters/properties/action") {
+                    action["enum"] = json!(["list", "reload", "open", "close", "pin", "unpin"]);
+                    action["description"] = Value::String(
+                        "Self-service toolbox action for the current persona.".to_string(),
+                    );
+                }
+                if let Some(properties) = tool
+                    .pointer_mut("/parameters/properties")
+                    .and_then(Value::as_object_mut)
+                {
+                    for key in [
+                        "persona",
+                        "role_ids",
+                        "manifest",
+                        "schema",
+                        "role",
+                        "context_governance",
+                        "mode",
+                        "manage_threshold_kb",
+                        "compact_threshold_kb",
+                        "report_to_matrix",
+                        "provider_body",
+                        "provider_index",
+                        "model",
+                        "default_tool_output_level",
+                        "tool_output_small_kb",
+                        "tool_output_normal_kb",
+                        "tool_output_large_kb",
+                        "name_en",
+                        "name_zh",
+                        "agent_retention_limit",
+                        "permission_mode",
+                        "terminal_audit_interval_secs",
+                        "image_compression_quality",
+                        "image_upload_max_mb",
+                        "theme_preset",
+                    ] {
+                        properties.remove(key);
+                    }
+                    if let Some(tool_ids) = properties.get_mut("tool_ids") {
+                        tool_ids["description"] = Value::String(
+                            "Stable tool ids to open, close, pin, or unpin in this persona's toolbox."
+                                .to_string(),
+                        );
+                    }
+                }
+            }
             continue;
         }
         tool["description"] = Value::String(
@@ -3833,6 +4105,9 @@ pub(crate) fn default_role_tool_ids_for_persona(persona: crate::PersonaKind) -> 
                 continue;
             };
             let canonical = codex_provider_tool_name(name).to_string();
+            if canonical == "tool_manage" {
+                continue;
+            }
             if !seen.insert(canonical.clone()) {
                 continue;
             }
@@ -4036,6 +4311,17 @@ pub fn describe_function_call(call: &FunctionCall) -> FunctionCallDisplay {
             kind_label: "Server".to_string(),
             action_label: server_manage_action_label(action.as_str()).to_string(),
             command_preview: format!("action={action}"),
+        };
+    }
+    if call.name == "server_split"
+        && let Ok(args) = serde_json::from_str::<ServerSplitArgs>(&call.arguments)
+    {
+        let action = server_split_action_key(args.action.as_str());
+        return FunctionCallDisplay {
+            brief: resolve_server_split_brief(args.brief.as_deref(), action.as_str()),
+            kind_label: "Server".to_string(),
+            action_label: server_split_action_label(action.as_str()).to_string(),
+            command_preview: build_server_split_input_preview(&args),
         };
     }
     if call.name == "persona_manage"
@@ -4427,6 +4713,7 @@ fn focus_gate_allows_recovery_call(call: &FunctionCall) -> bool {
             | "tool_manage"
             | "focus_mode"
             | "persona_manage"
+            | "server_split"
             | "command"
             | "exec_command"
             | "context_manage"
@@ -4446,7 +4733,7 @@ fn focus_gate_failure(
         call.name.as_str(),
         call_display.brief.clone(),
         call_display.kind_label.clone(),
-        call_display.action_label.clone(),
+        "Rejected".to_string(),
         Some(call_display.command_preview.clone()),
         anyhow::anyhow!(
             "当前任务已列出计划，后续复杂执行必须先进入专注模式。请先调用 focus_mode.enter，再继续当前工具；旧 enter 别名仍可解析，但不建议继续使用。\nplan_summary: {}",
@@ -4549,6 +4836,14 @@ fn dispatch_function_call(
             "Server".to_string(),
             "Failed".to_string(),
             || execute_server_manage(call.arguments.as_str()),
+        ),
+        "server_split" => run_exec_style_tool(
+            call,
+            call_display,
+            "server_split",
+            "Server".to_string(),
+            "Failed".to_string(),
+            || execute_server_split(call.arguments.as_str()),
         ),
         "persona_manage" => run_exec_style_tool(
             call,
@@ -5016,11 +5311,10 @@ pub fn execute_function_call(
             }),
         );
     }
-    let failed = execution
-        .action_label
-        .to_ascii_lowercase()
-        .contains("error")
-        || execution.exit_code.is_some_and(|code| code != 0);
+    let failed = matches!(
+        tool_status_from_execution(call.name.as_str(), &execution),
+        ToolRunStatus::Error | ToolRunStatus::Cancelled | ToolRunStatus::Timeout
+    );
     let _ = crate::aidebug::write_tool_event(
         crate::app_project_root().as_path(),
         "mcp.function_call.done",
@@ -5039,6 +5333,7 @@ pub fn execute_function_call(
             "exit_code": execution.exit_code,
             "toolmemory_entry_id": execution.toolmemory_entry_id,
             "archived": execution.archived_output.is_some(),
+            "status": tool_status_from_execution(call.name.as_str(), &execution),
             "failed": failed,
         }),
     );
@@ -5294,7 +5589,7 @@ fn build_executed_function_failure(
         action_label,
         command_preview,
         output_preview,
-        exit_code: None,
+        exit_code: Some(1),
         toolmemory_entry_id: None,
         archived_output: None,
     })
@@ -6609,6 +6904,725 @@ fn format_indented_block(text: &str, indent: &str) -> String {
         .map(|line| format!("{indent}{line}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[derive(Debug, Clone)]
+struct ServerSplitCreatePlan {
+    suffix: &'static str,
+    id: String,
+    label: String,
+    task: Option<String>,
+    server_id: Option<String>,
+    server_name: Option<String>,
+    brief: Option<String>,
+}
+
+fn server_split_action_key(action: &str) -> String {
+    match action.trim().to_ascii_lowercase().as_str() {
+        "" | "list" | "status" => "list".to_string(),
+        "split" | "create" | "add" | "fork" => "split".to_string(),
+        "split_batch" | "create_batch" | "batch" | "batch_split" | "batch_create" => {
+            "split_batch".to_string()
+        }
+        "send" | "communicate" | "message" | "dispatch" | "talk" => "send".to_string(),
+        "close" | "remove" | "delete" | "disable" | "stop" => "close".to_string(),
+        "close_batch" | "batch_close" | "remove_batch" => "close_batch".to_string(),
+        "close_all" | "remove_all" | "disable_all" => "close_all".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn server_split_action_label(action: &str) -> &'static str {
+    match action {
+        "list" => "List",
+        "split" => "Split",
+        "split_batch" => "Batch",
+        "send" => "Communicate",
+        "close" => "Close",
+        "close_batch" => "Close",
+        "close_all" => "Close All",
+        _ => "Run",
+    }
+}
+
+fn resolve_server_split_brief(raw: Option<&str>, action: &str) -> String {
+    normalize_brief(raw).unwrap_or_else(|| match action {
+        "list" => "查看御网络".to_string(),
+        "split" => "分裂一个御".to_string(),
+        "split_batch" => "批量分裂御".to_string(),
+        "send" => "联络分裂御".to_string(),
+        "close" => "关闭分裂御".to_string(),
+        "close_batch" => "批量关闭分裂御".to_string(),
+        "close_all" => "关闭全部分裂御".to_string(),
+        _ => "管理御网络".to_string(),
+    })
+}
+
+fn server_split_trimmed(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn server_split_suffix_from_selector(raw: &str) -> Option<&'static str> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let lower = value.replace('-', "_").to_ascii_lowercase();
+    let mut candidates = vec![value.to_string(), lower.clone()];
+    if let Some(tail) = lower.strip_prefix(crate::roles::SERVER_SPLIT_ID_PREFIX) {
+        candidates.push(tail.to_string());
+    }
+    if let Some(tail) = value.strip_prefix("御") {
+        candidates.push(tail.trim().to_string());
+    }
+    for candidate in candidates {
+        for suffix in SERVER_SPLIT_SUFFIXES {
+            if candidate.eq_ignore_ascii_case(suffix) {
+                return Some(suffix);
+            }
+        }
+    }
+    None
+}
+
+fn server_split_id_for_suffix(suffix: &str) -> String {
+    format!(
+        "{}{}",
+        crate::roles::SERVER_SPLIT_ID_PREFIX,
+        suffix.to_ascii_lowercase()
+    )
+}
+
+fn server_split_context_dir_for_suffix(suffix: &str) -> String {
+    format!(
+        "{}{}",
+        crate::roles::SERVER_SPLIT_CONTEXT_PREFIX,
+        suffix.to_ascii_lowercase()
+    )
+}
+
+fn server_split_default_label(suffix: &str) -> String {
+    format!("御{suffix}")
+}
+
+fn server_split_normalize_label(label: Option<&str>, suffix: &str) -> String {
+    label
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            if value.eq_ignore_ascii_case(suffix) {
+                server_split_default_label(suffix)
+            } else {
+                value.to_string()
+            }
+        })
+        .unwrap_or_else(|| server_split_default_label(suffix))
+}
+
+fn server_split_role_matches_selector(
+    role: &crate::roles::DynamicRoleSpec,
+    selector: &str,
+) -> bool {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        return false;
+    }
+    let contract = role.contract();
+    if role.id.eq_ignore_ascii_case(selector)
+        || contract
+            .identity
+            .display_name
+            .eq_ignore_ascii_case(selector)
+        || contract
+            .identity
+            .header_badge
+            .eq_ignore_ascii_case(selector)
+        || contract.identity.tab_label.eq_ignore_ascii_case(selector)
+        || contract.identity.glyph.as_deref() == Some(selector)
+    {
+        return true;
+    }
+    server_split_suffix_from_selector(selector).is_some_and(|suffix| {
+        role.id == server_split_id_for_suffix(suffix)
+            || contract
+                .identity
+                .header_badge
+                .eq_ignore_ascii_case(server_split_default_label(suffix).as_str())
+    })
+}
+
+fn server_split_role_by_selector(selector: &str) -> Option<crate::roles::DynamicRoleSpec> {
+    crate::roles::server_split_role_specs()
+        .into_iter()
+        .find(|role| server_split_role_matches_selector(role, selector))
+}
+
+fn server_split_collect_selectors(args: &ServerSplitArgs) -> Vec<String> {
+    let mut selectors = Vec::new();
+    let mut seen = HashSet::new();
+    let mut push_selector = |value: Option<&str>| {
+        let Some(selector) = server_split_trimmed(value) else {
+            return;
+        };
+        let key = selector.to_ascii_lowercase();
+        if seen.insert(key) {
+            selectors.push(selector);
+        }
+    };
+    push_selector(args.split_id.as_deref());
+    push_selector(args.target.as_deref());
+    push_selector(args.label.as_deref());
+    for value in &args.split_ids {
+        push_selector(Some(value.as_str()));
+    }
+    for value in &args.targets {
+        push_selector(Some(value.as_str()));
+    }
+    for value in &args.labels {
+        push_selector(Some(value.as_str()));
+    }
+    for item in &args.items {
+        push_selector(item.split_id.as_deref());
+        push_selector(item.label.as_deref());
+    }
+    selectors
+}
+
+fn build_server_split_input_preview(args: &ServerSplitArgs) -> String {
+    let action = server_split_action_key(args.action.as_str());
+    let mut lines = vec![format!("action={action}")];
+    if let Some(count) = args.count {
+        lines.push(format!("count={count}"));
+    }
+    let selectors = server_split_collect_selectors(args);
+    if !selectors.is_empty() {
+        lines.push(format!("target={}", selectors.join(",")));
+    }
+    if args.all {
+        lines.push("target=all".to_string());
+    }
+    if let Some(message) = args
+        .message
+        .as_deref()
+        .or(args.task.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(truncate_with_ellipsis(message, 240));
+    }
+    lines.join("\n")
+}
+
+fn server_split_role_prompt(label: &str, role_id: &str) -> String {
+    format!(
+        "你是 Server · 御网络中的分裂御：{}（role_id: {}）。\n\
+你继承 Server · 御 的服务器管理、SSH、防御、日志排查和远程运维职责，但拥有独立上下文、独立运行态和独立工具投影。\n\
+你与本体御、其它分裂御、Matrix、Coding 可以通过 persona_manage/server_split 互相通信；收到派送任务后直接作为该分裂御执行，不要把同一任务回派给自己。\n\
+御网络最多 10 个分裂角色，关闭只表示禁用入口并保留上下文；进行中的排查、连接、日志观察和结论应优先收口并回报。\n\
+多服务器任务中，明确记录自己负责的 server_id/server_name、执行过的检查、风险和下一步建议。",
+        label, role_id
+    )
+}
+
+fn server_split_assignment_message(
+    task: Option<&str>,
+    server_id: Option<&str>,
+    server_name: Option<&str>,
+) -> Option<String> {
+    let task = task.map(str::trim).filter(|value| !value.is_empty());
+    let server_id = server_id.map(str::trim).filter(|value| !value.is_empty());
+    let server_name = server_name.map(str::trim).filter(|value| !value.is_empty());
+    if task.is_none() && server_id.is_none() && server_name.is_none() {
+        return None;
+    }
+    let mut lines = vec!["[server_split assignment]".to_string()];
+    if let Some(task) = task {
+        lines.push(format!("task: {task}"));
+    } else {
+        lines.push(
+            "task: 接手该服务器的观察、排障、防御或管理协作；先做最小验证再推进。".to_string(),
+        );
+    }
+    if let Some(server_id) = server_id {
+        lines.push(format!("server_id: {server_id}"));
+    }
+    if let Some(server_name) = server_name {
+        lines.push(format!("server_name: {server_name}"));
+    }
+    lines.push(
+        "hint: 可用 server_manage status/test/select/dispatch 或 command target=ssh / pty_run target=ssh；必要时向本体御、Matrix 或 Coding 回报。"
+            .to_string(),
+    );
+    Some(lines.join("\n"))
+}
+
+fn server_split_queue_message(
+    role: &crate::roles::DynamicRoleSpec,
+    message: String,
+    brief: Option<String>,
+    priority: Option<String>,
+) -> Result<ExecCommandExecution> {
+    if !role.enabled {
+        anyhow::bail!("分裂御 {} 当前已关闭，不能继续派送消息", role.id);
+    }
+    execute_dynamic_role_persona_manage(
+        current_tool_persona(),
+        &PersonaManageArgs {
+            action: "send".to_string(),
+            persona: role.id.clone(),
+            message: Some(message),
+            brief,
+            reason: Some("server_split communication".to_string()),
+            include_recent: None,
+            priority,
+        },
+        role.clone(),
+    )
+}
+
+fn server_split_active_count(roles: &[crate::roles::DynamicRoleSpec]) -> usize {
+    roles.iter().filter(|role| role.enabled).count()
+}
+
+fn server_split_pick_next_suffix(
+    enabled_ids: &HashSet<String>,
+    selected_ids: &HashSet<String>,
+) -> Result<&'static str> {
+    for suffix in SERVER_SPLIT_SUFFIXES {
+        let id = server_split_id_for_suffix(suffix);
+        if !enabled_ids.contains(&id) && !selected_ids.contains(&id) {
+            return Ok(suffix);
+        }
+    }
+    anyhow::bail!(
+        "御网络最多同时启用 {} 个分裂御",
+        crate::roles::SERVER_SPLIT_ROLE_LIMIT
+    )
+}
+
+fn server_split_create_items(
+    args: &ServerSplitArgs,
+    action: &str,
+) -> Result<Vec<ServerSplitItemArgs>> {
+    if !args.items.is_empty() {
+        return Ok(args.items.clone());
+    }
+    let inferred = args
+        .labels
+        .len()
+        .max(args.tasks.len())
+        .max(args.server_ids.len());
+    let count = args
+        .count
+        .unwrap_or_else(|| if inferred > 0 { inferred } else { 1 });
+    if count == 0 {
+        anyhow::bail!("server_split {action} 的 count 必须大于 0");
+    }
+    if count > crate::roles::SERVER_SPLIT_ROLE_LIMIT {
+        anyhow::bail!(
+            "server_split 一次最多请求 {} 个分裂御",
+            crate::roles::SERVER_SPLIT_ROLE_LIMIT
+        );
+    }
+    let mut items = Vec::new();
+    for index in 0..count {
+        items.push(ServerSplitItemArgs {
+            split_id: if index == 0 {
+                args.split_id.clone().or_else(|| args.target.clone())
+            } else {
+                None
+            },
+            label: args
+                .labels
+                .get(index)
+                .cloned()
+                .or_else(|| (index == 0).then(|| args.label.clone()).flatten()),
+            task: args
+                .tasks
+                .get(index)
+                .cloned()
+                .or_else(|| (index == 0).then(|| args.task.clone()).flatten()),
+            message: (index == 0).then(|| args.message.clone()).flatten(),
+            server_id: args
+                .server_ids
+                .get(index)
+                .cloned()
+                .or_else(|| (index == 0).then(|| args.server_id.clone()).flatten()),
+            server_name: (index == 0).then(|| args.server_name.clone()).flatten(),
+            brief: (index == 0).then(|| args.brief.clone()).flatten(),
+        });
+    }
+    Ok(items)
+}
+
+fn server_split_build_create_plans(
+    args: &ServerSplitArgs,
+    action: &str,
+) -> Result<Vec<ServerSplitCreatePlan>> {
+    let existing_roles = crate::roles::server_split_role_specs();
+    let enabled_ids = existing_roles
+        .iter()
+        .filter(|role| role.enabled)
+        .map(|role| role.id.clone())
+        .collect::<HashSet<_>>();
+    let mut selected_ids = HashSet::new();
+    let mut plans = Vec::new();
+    for item in server_split_create_items(args, action)? {
+        let selector = item
+            .split_id
+            .as_deref()
+            .or(item.label.as_deref())
+            .and_then(|value| server_split_trimmed(Some(value)));
+        let suffix = selector
+            .as_deref()
+            .and_then(server_split_suffix_from_selector)
+            .map(Ok)
+            .unwrap_or_else(|| server_split_pick_next_suffix(&enabled_ids, &selected_ids))?;
+        let id = server_split_id_for_suffix(suffix);
+        if !selected_ids.insert(id.clone()) {
+            anyhow::bail!("本次 server_split 重复选择了同一个分裂御：{id}");
+        }
+        let label =
+            server_split_normalize_label(item.label.as_deref().or(selector.as_deref()), suffix);
+        plans.push(ServerSplitCreatePlan {
+            suffix,
+            id,
+            label,
+            task: item.message.or(item.task),
+            server_id: item.server_id,
+            server_name: item.server_name,
+            brief: item.brief,
+        });
+    }
+    let active_before = server_split_active_count(existing_roles.as_slice());
+    let new_enable_count = plans
+        .iter()
+        .filter(|plan| !enabled_ids.contains(&plan.id))
+        .count();
+    if active_before.saturating_add(new_enable_count) > crate::roles::SERVER_SPLIT_ROLE_LIMIT {
+        anyhow::bail!(
+            "御网络最多同时启用 {} 个分裂御；当前 active={}，本次新增启用={}",
+            crate::roles::SERVER_SPLIT_ROLE_LIMIT,
+            active_before,
+            new_enable_count
+        );
+    }
+    Ok(plans)
+}
+
+fn server_split_list_output() -> String {
+    let roles = crate::roles::server_split_role_specs();
+    let active = server_split_active_count(roles.as_slice());
+    let mut lines = vec![
+        "御网络:".to_string(),
+        format!("limit: {}", crate::roles::SERVER_SPLIT_ROLE_LIMIT),
+        format!("total_slots: {}", roles.len()),
+        format!("active: {active}"),
+        "continuity: close 只禁用入口，保留 context/memory；不会删除分裂御运行态产物。".to_string(),
+        "columns: id · label · state · base · context · tools".to_string(),
+    ];
+    if roles.is_empty() {
+        lines.push("- (empty)".to_string());
+        return lines.join("\n");
+    }
+    for role in roles {
+        let contract = role.contract();
+        lines.push(format!(
+            "- {} · {} · {} · {} · context/{} · {}",
+            role.id,
+            contract.identity.header_badge,
+            if role.enabled { "active" } else { "closed" },
+            contract.capability.base_persona.slug(),
+            contract.storage.context_dir,
+            if contract.capability.default_tools.is_empty() {
+                "(none)".to_string()
+            } else {
+                contract.capability.default_tools.join(",")
+            }
+        ));
+    }
+    lines.join("\n")
+}
+
+fn server_split_list_execution(brief: String) -> ExecCommandExecution {
+    let output = server_split_list_output();
+    ExecCommandExecution {
+        brief,
+        kind_label: "Server".to_string(),
+        action_label: "List".to_string(),
+        model_output: output.clone(),
+        command_preview: "server_split list".to_string(),
+        output_preview: output,
+        exit_code: Some(0),
+        extra_output_items: Vec::new(),
+        toolmemory_entry_id: None,
+        archived_output: None,
+    }
+}
+
+fn execute_server_split_create(
+    args: &ServerSplitArgs,
+    action: &str,
+    brief: String,
+) -> Result<ExecCommandExecution> {
+    let before_roles = crate::roles::server_split_role_specs();
+    let was_enabled = before_roles
+        .iter()
+        .map(|role| (role.id.clone(), role.enabled))
+        .collect::<HashMap<_, _>>();
+    let default_tools = default_role_tool_ids_for_persona(crate::PersonaKind::Server);
+    let plans = server_split_build_create_plans(args, action)?;
+    let mut lines = vec![
+        "server_split:ok".to_string(),
+        format!("action:{}", action.to_ascii_uppercase()),
+    ];
+    let mut queued = Vec::new();
+    for plan in plans {
+        let context_dir = server_split_context_dir_for_suffix(plan.suffix);
+        let prompt = server_split_role_prompt(plan.label.as_str(), plan.id.as_str());
+        let (role, created) = crate::roles::upsert_server_split_role(
+            plan.id.as_str(),
+            plan.label.as_str(),
+            plan.label.as_str(),
+            context_dir.as_str(),
+            default_tools.as_slice(),
+            prompt.as_str(),
+        )?;
+        let state = if created {
+            "created"
+        } else if was_enabled.get(&role.id).copied().unwrap_or(false) {
+            "already_active"
+        } else {
+            "reopened"
+        };
+        let contract = role.contract();
+        lines.push(format!(
+            "- {} · {} · {} · context/{} · tools:{}",
+            role.id,
+            contract.identity.header_badge,
+            state,
+            contract.storage.context_dir,
+            contract.capability.default_tools.join(",")
+        ));
+        if let Some(message) = server_split_assignment_message(
+            plan.task.as_deref(),
+            plan.server_id.as_deref(),
+            plan.server_name.as_deref(),
+        ) {
+            let send = server_split_queue_message(
+                &role,
+                message,
+                plan.brief
+                    .clone()
+                    .or_else(|| Some(format!("指派 {}", contract.identity.header_badge))),
+                args.priority.clone(),
+            )?;
+            queued.push(format!(
+                "{} -> {}",
+                contract.identity.header_badge, send.command_preview
+            ));
+        }
+    }
+    if !queued.is_empty() {
+        lines.push("queued_assignments:".to_string());
+        lines.extend(queued.into_iter().map(|item| format!("- {item}")));
+    }
+    lines.push(String::new());
+    lines.push(server_split_list_output());
+    let output = lines.join("\n");
+    Ok(ExecCommandExecution {
+        brief,
+        kind_label: "Server".to_string(),
+        action_label: server_split_action_label(action).to_string(),
+        model_output: output.clone(),
+        command_preview: format!("server_split {action}"),
+        output_preview: output,
+        exit_code: Some(0),
+        extra_output_items: Vec::new(),
+        toolmemory_entry_id: None,
+        archived_output: None,
+    })
+}
+
+fn execute_server_split_send(
+    args: &ServerSplitArgs,
+    brief: String,
+) -> Result<ExecCommandExecution> {
+    let message = args
+        .message
+        .as_deref()
+        .or(args.task.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("server_split communicate 需要 message 或 task"))?;
+    let roles = crate::roles::server_split_role_specs();
+    let targets = if args.all {
+        roles
+            .into_iter()
+            .filter(|role| role.enabled)
+            .collect::<Vec<_>>()
+    } else {
+        let selectors = server_split_collect_selectors(args);
+        if selectors.is_empty() {
+            anyhow::bail!(
+                "server_split communicate 需要 split_id / split_ids / target / label，或 all=true"
+            );
+        }
+        let mut targets = Vec::new();
+        let mut seen = HashSet::new();
+        for selector in selectors {
+            let role = server_split_role_by_selector(selector.as_str())
+                .ok_or_else(|| anyhow!("未找到分裂御：{selector}"))?;
+            if !role.enabled {
+                anyhow::bail!("分裂御 {} 当前已关闭，不能通信", role.id);
+            }
+            if seen.insert(role.id.clone()) {
+                targets.push(role);
+            }
+        }
+        targets
+    };
+    if targets.is_empty() {
+        anyhow::bail!("server_split communicate 没有 active 分裂御");
+    }
+    let mut lines = vec![
+        "server_split:ok".to_string(),
+        "action:SEND".to_string(),
+        format!("targets:{}", targets.len()),
+    ];
+    for role in targets {
+        let contract = role.contract();
+        let send = server_split_queue_message(
+            &role,
+            message.clone(),
+            args.brief
+                .clone()
+                .or_else(|| Some(format!("联络 {}", contract.identity.header_badge))),
+            args.priority.clone(),
+        )?;
+        lines.push(format!(
+            "- {} · {} · {}",
+            role.id, contract.identity.header_badge, send.command_preview
+        ));
+    }
+    let output = lines.join("\n");
+    Ok(ExecCommandExecution {
+        brief,
+        kind_label: "Server".to_string(),
+        action_label: "Communicate".to_string(),
+        model_output: output.clone(),
+        command_preview: "server_split send".to_string(),
+        output_preview: output,
+        exit_code: Some(0),
+        extra_output_items: Vec::new(),
+        toolmemory_entry_id: None,
+        archived_output: None,
+    })
+}
+
+fn execute_server_split_close(
+    args: &ServerSplitArgs,
+    action: &str,
+    brief: String,
+) -> Result<ExecCommandExecution> {
+    let all = args.all || action == "close_all";
+    let targets = if all {
+        crate::roles::server_split_role_specs()
+            .into_iter()
+            .filter(|role| role.enabled)
+            .collect::<Vec<_>>()
+    } else {
+        let selectors = server_split_collect_selectors(args);
+        if selectors.is_empty() {
+            anyhow::bail!(
+                "server_split close 需要 split_id / split_ids / target / label，或 action=close_all"
+            );
+        }
+        let mut targets = Vec::new();
+        let mut seen = HashSet::new();
+        for selector in selectors {
+            let role = server_split_role_by_selector(selector.as_str())
+                .ok_or_else(|| anyhow!("未找到分裂御：{selector}"))?;
+            if seen.insert(role.id.clone()) {
+                targets.push(role);
+            }
+        }
+        targets
+    };
+    if targets.is_empty() {
+        return Ok(ExecCommandExecution {
+            brief,
+            kind_label: "Server".to_string(),
+            action_label: server_split_action_label(action).to_string(),
+            model_output: "server_split close: no active split roles".to_string(),
+            command_preview: format!("server_split {action}"),
+            output_preview: "没有需要关闭的 active 分裂御。".to_string(),
+            exit_code: Some(0),
+            extra_output_items: Vec::new(),
+            toolmemory_entry_id: None,
+            archived_output: None,
+        });
+    }
+    let ids = targets
+        .iter()
+        .map(|role| role.id.clone())
+        .collect::<Vec<_>>();
+    let updated = crate::roles::set_server_split_roles_enabled(ids.as_slice(), false)?;
+    let mut lines = vec![
+        "server_split:ok".to_string(),
+        format!("action:{}", action.to_ascii_uppercase()),
+        "continuity: disabled only; context/memory preserved; no role directory deletion."
+            .to_string(),
+    ];
+    for role in updated {
+        let contract = role.contract();
+        lines.push(format!(
+            "- {} · {} · closed · context/{}",
+            role.id, contract.identity.header_badge, contract.storage.context_dir
+        ));
+    }
+    lines.push(String::new());
+    lines.push(server_split_list_output());
+    let output = lines.join("\n");
+    Ok(ExecCommandExecution {
+        brief,
+        kind_label: "Server".to_string(),
+        action_label: server_split_action_label(action).to_string(),
+        model_output: output.clone(),
+        command_preview: format!("server_split {action}"),
+        output_preview: output,
+        exit_code: Some(0),
+        extra_output_items: Vec::new(),
+        toolmemory_entry_id: None,
+        archived_output: None,
+    })
+}
+
+fn execute_server_split(arguments: &str) -> Result<ExecCommandExecution> {
+    if !matches!(current_tool_persona(), crate::PersonaKind::Server) {
+        return Err(anyhow!(
+            "server_split 只允许 Server · 御 和御网络分裂角色使用"
+        ));
+    }
+    let args: ServerSplitArgs =
+        serde_json::from_str(arguments).context("解析 server_split 参数失败")?;
+    let action = server_split_action_key(args.action.as_str());
+    let brief = resolve_server_split_brief(args.brief.as_deref(), action.as_str());
+    match action.as_str() {
+        "list" => Ok(server_split_list_execution(brief)),
+        "split" | "split_batch" => execute_server_split_create(&args, action.as_str(), brief),
+        "send" => execute_server_split_send(&args, brief),
+        "close" | "close_batch" | "close_all" => {
+            execute_server_split_close(&args, action.as_str(), brief)
+        }
+        other => Err(anyhow!(
+            "server_split action 仅支持 list / split / split_batch / send / close / close_batch / close_all，收到：{other}"
+        )),
+    }
 }
 
 fn execute_server_manage_dispatch_jobs(
@@ -11520,10 +12534,8 @@ fn draw_image_err_body_snippet(resp: reqwest::blocking::Response) -> String {
             let trimmed = text.trim().to_string();
             if trimmed.is_empty() {
                 "(empty body)".to_string()
-            } else if trimmed.len() > 260 {
-                format!("{}…", &trimmed[..260])
             } else {
-                trimmed
+                truncate_chars(trimmed.as_str(), 260)
             }
         }
         Err(_) => "(body read failed)".to_string(),
@@ -12111,12 +13123,19 @@ fn execute_draw_image(
                 "size": args.size.key(),
                 "n": 1,
             });
+            let urls = crate::apiurl::images_url_candidates(provider.base_url.as_str());
             let body_text = post_json_with_auth_variants(
                 &client,
-                &crate::apiurl::images_url_candidates(provider.base_url.as_str()),
+                urls.as_slice(),
                 &body,
                 provider.effective_api_key(),
-            )?;
+            )
+            .with_context(|| {
+                format!(
+                    "图像生成请求失败：model={DRAW_IMAGE_MODEL}, endpoint={}",
+                    urls.join(", ")
+                )
+            })?;
             let parsed: DrawImageGenerationResponse = serde_json::from_str(body_text.trim())
                 .with_context(|| {
                     format!(
@@ -12160,7 +13179,13 @@ fn execute_draw_image(
                             .part("image", part))
                     }
                 },
-            )?;
+            )
+            .with_context(|| {
+                format!(
+                    "图像编辑请求失败：model={DRAW_IMAGE_MODEL}, endpoint={}",
+                    urls.join(", ")
+                )
+            })?;
             let parsed: DrawImageGenerationResponse = serde_json::from_str(body_text.trim())
                 .with_context(|| {
                     format!(
@@ -12511,9 +13536,18 @@ fn execute_dynamic_role_persona_manage(
                 ));
             }
             let include_recent = args.include_recent.unwrap_or(8).clamp(1, 24);
-            let model_output = append_datememory_pressure_snapshot(
-                crate::roles::role_folded_observation(&role, include_recent)?,
-            );
+            let mut model_output = crate::roles::role_folded_observation(&role, include_recent)?;
+            if let Ok(dispatch) = crate::aidebug::persona_dispatch_observation(
+                crate::app_project_root().as_path(),
+                role.contract().capability.base_persona.context_dir_name(),
+                Some(role.id.as_str()),
+                include_recent,
+            ) && !dispatch.is_empty()
+            {
+                model_output.push('\n');
+                model_output.push_str(dispatch.as_str());
+            }
+            let model_output = append_datememory_pressure_snapshot(model_output);
             Ok(ExecCommandExecution {
                 brief,
                 kind_label: "Persona".to_string(),
@@ -12600,6 +13634,29 @@ fn execute_dynamic_role_persona_manage(
                 created_at_ms: crate::unix_timestamp_millis_u64_shared(),
             };
             append_persona_command(&request)?;
+            let _ = crate::aidebug::write_persona_dispatch_event(
+                crate::app_project_root().as_path(),
+                json!({
+                    "id": request.id.as_str(),
+                    "phase": "queued",
+                    "status": "queued",
+                    "action": action.as_str(),
+                    "priority": if request.interrupt_active { "urgent" } else { "normal" },
+                    "interrupt_active": request.interrupt_active,
+                    "source_persona": request.source_persona.as_deref(),
+                    "source_role": request.source_role.as_deref(),
+                    "source_role_label": request.source_role_label.as_deref(),
+                    "source_role_context_dir": request.source_role_context_dir.as_deref(),
+                    "target_persona": request.persona.as_str(),
+                    "target_role": request.target_role.as_deref(),
+                    "target_role_label": request.target_role_label.as_deref(),
+                    "target_role_context_dir": request.target_role_context_dir.as_deref(),
+                    "brief": request.brief.as_deref(),
+                    "reason": request.reason.as_deref(),
+                    "message_chars": request.message.as_ref().map(|value| value.chars().count()),
+                    "created_at_ms": request.created_at_ms,
+                }),
+            );
             let model_output = format!(
                 "To {} · role:{} · persona_manage:queued\nid:{}\naction:{}\nfrom:{}\nbase_persona:{}\nrole_execution:direct\npriority:{}\nvisibility: folded_chat_only\ntool_projection:{}",
                 contract.identity.header_badge,
@@ -12657,9 +13714,19 @@ fn execute_persona_manage(arguments: &str) -> Result<ExecCommandExecution> {
                 ));
             }
             let include_recent = args.include_recent.unwrap_or(8).clamp(1, 24);
-            let model_output = append_datememory_pressure_snapshot(
-                crate::context::persona_folded_observation(persona, include_recent)?,
-            );
+            let mut model_output =
+                crate::context::persona_folded_observation(persona, include_recent)?;
+            if let Ok(dispatch) = crate::aidebug::persona_dispatch_observation(
+                crate::app_project_root().as_path(),
+                persona.context_dir_name(),
+                None,
+                include_recent,
+            ) && !dispatch.is_empty()
+            {
+                model_output.push('\n');
+                model_output.push_str(dispatch.as_str());
+            }
+            let model_output = append_datememory_pressure_snapshot(model_output);
             Ok(ExecCommandExecution {
                 brief,
                 kind_label: "Persona".to_string(),
@@ -12724,6 +13791,29 @@ fn execute_persona_manage(arguments: &str) -> Result<ExecCommandExecution> {
                 created_at_ms: crate::unix_timestamp_millis_u64_shared(),
             };
             append_persona_command(&request)?;
+            let _ = crate::aidebug::write_persona_dispatch_event(
+                crate::app_project_root().as_path(),
+                json!({
+                    "id": request.id.as_str(),
+                    "phase": "queued",
+                    "status": "queued",
+                    "action": action.as_str(),
+                    "priority": if request.interrupt_active { "urgent" } else { "normal" },
+                    "interrupt_active": request.interrupt_active,
+                    "source_persona": request.source_persona.as_deref(),
+                    "source_role": request.source_role.as_deref(),
+                    "source_role_label": request.source_role_label.as_deref(),
+                    "source_role_context_dir": request.source_role_context_dir.as_deref(),
+                    "target_persona": request.persona.as_str(),
+                    "target_role": request.target_role.as_deref(),
+                    "target_role_label": request.target_role_label.as_deref(),
+                    "target_role_context_dir": request.target_role_context_dir.as_deref(),
+                    "brief": request.brief.as_deref(),
+                    "reason": request.reason.as_deref(),
+                    "message_chars": request.message.as_ref().map(|value| value.chars().count()),
+                    "created_at_ms": request.created_at_ms,
+                }),
+            );
             let model_output = format!(
                 "To {} · persona_manage:queued\nid:{}\naction:{}\nfrom:{}\npersona:{}\npriority:{}\nvisibility: folded_chat_only",
                 persona.tab_title(),
@@ -14076,6 +15166,7 @@ fn agent_tool_event_line(name: &str, brief: &str, preview: &str) -> String {
         "context_summary" => format!("◌ Summary · {}", preview_agent_line(preview, 72)),
         "view_image" => format!("◉ View · {}", preview_agent_line(preview, 72)),
         "server_manage" => format!("◌ Server · {}", preview_agent_line(preview, 72)),
+        "server_split" => format!("◌ 御网络 · {}", preview_agent_line(preview, 72)),
         "web_search" => format!("◎ Web · {}", preview_agent_line(preview, 72)),
         "wait_agent" => format!("◌ Wait · {}", preview_agent_line(preview, 72)),
         "list_agent" => "◌ List · agents".to_string(),
@@ -14883,6 +15974,7 @@ fn default_tool_brief(name: &str) -> String {
         "draw_image" | "image_gen" => "生成图片".to_string(),
         "browser" => "浏览网页会话".to_string(),
         "server_manage" => "管理服务器连接".to_string(),
+        "server_split" => "管理御网络分裂".to_string(),
         "apply_patch" => "应用补丁修改文件".to_string(),
         "rewrite_section" => "稳定改写文件片段".to_string(),
         "update_plan" => "更新任务计划".to_string(),
@@ -18270,6 +19362,18 @@ mod tests {
             ToolProjectionState::Expanded
         );
         assert_eq!(
+            default_tool_projection_state(crate::PersonaKind::Advisor, "tool_manage"),
+            ToolProjectionState::Expanded
+        );
+        assert_eq!(
+            default_tool_projection_state(crate::PersonaKind::Coding, "tool_manage"),
+            ToolProjectionState::Expanded
+        );
+        assert_eq!(
+            default_tool_projection_state(crate::PersonaKind::Server, "tool_manage"),
+            ToolProjectionState::Expanded
+        );
+        assert_eq!(
             default_tool_projection_state(crate::PersonaKind::Matrix, "context_manage"),
             ToolProjectionState::Closed
         );
@@ -18332,6 +19436,18 @@ mod tests {
         assert_eq!(
             default_tool_projection_state(crate::PersonaKind::Matrix, "command"),
             ToolProjectionState::Closed
+        );
+        assert_eq!(
+            default_tool_projection_state(crate::PersonaKind::Matrix, "server_split"),
+            ToolProjectionState::Closed
+        );
+        assert_eq!(
+            default_tool_projection_state(crate::PersonaKind::Coding, "server_split"),
+            ToolProjectionState::Closed
+        );
+        assert_eq!(
+            default_tool_projection_state(crate::PersonaKind::Server, "server_split"),
+            ToolProjectionState::Expanded
         );
     }
 
@@ -18874,10 +19990,11 @@ mod tests {
             );
             assert_eq!(
                 default_tool_projection_state(crate::PersonaKind::Coding, tool_name),
-                ToolProjectionState::Hidden
+                ToolProjectionState::Closed
             );
             set_tool_persona(crate::PersonaKind::Coding);
-            assert!(!tool_names(&codex_tools()).contains(&tool_name.to_string()));
+            assert!(tool_names(&codex_tools()).contains(&tool_name.to_string()));
+            assert!(!tool_names(&codex_tools_for_provider()).contains(&tool_name.to_string()));
             set_tool_persona(crate::PersonaKind::Matrix);
             assert!(!tool_names(&codex_tools_for_provider()).contains(&tool_name.to_string()));
 
@@ -20039,7 +21156,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_role_can_assign_external_tool_without_leaking_to_base_persona_schema() {
+    fn dynamic_role_assigned_external_tool_opens_base_projection_with_self_managed_toolboxes() {
         with_test_home(|home_root| {
             let project_root = home_root.join(PROJECTYING_REL_PATH);
             let tool_name = "projectying_role_echo";
@@ -20068,7 +21185,7 @@ mod tests {
             .expect("create role with external tool");
 
             set_tool_persona(crate::PersonaKind::Coding);
-            assert!(!tool_names(&codex_tools()).contains(&tool_name.to_string()));
+            assert!(tool_names(&codex_tools()).contains(&tool_name.to_string()));
             assert!(!tool_names(&codex_tools_for_provider()).contains(&tool_name.to_string()));
 
             set_tool_persona(crate::PersonaKind::Matrix);
@@ -20089,13 +21206,13 @@ mod tests {
                 crate::PersonaKind::Coding,
             )
             .expect("coding projected tools");
-            assert!(!opened.contains(tool_name));
+            assert!(opened.contains(tool_name));
             let coding_state = fs::read_to_string(project_root.join("context/Coding/state.json"))
                 .expect("read coding state");
             assert!(coding_state.contains(tool_name));
 
             set_tool_persona(crate::PersonaKind::Coding);
-            assert!(!tool_names(&codex_tools_for_provider()).contains(&tool_name.to_string()));
+            assert!(tool_names(&codex_tools_for_provider()).contains(&tool_name.to_string()));
 
             let mut allowed_tool_ids = std::collections::HashSet::new();
             allowed_tool_ids.insert(tool_name.to_string());
@@ -20490,6 +21607,53 @@ mod tests {
     }
 
     #[test]
+    fn failed_function_call_builds_error_envelope() {
+        let call = FunctionCall {
+            call_id: "call_draw_failed".to_string(),
+            name: "draw_image".to_string(),
+            arguments: r#"{"prompt":"test"}"#.to_string(),
+        };
+        let display = FunctionCallDisplay {
+            brief: "生成测试图".to_string(),
+            kind_label: "Image".to_string(),
+            action_label: "Draw".to_string(),
+            command_preview: "prompt: test".to_string(),
+        };
+        let execution = build_executed_function_failure(
+            call.call_id.as_str(),
+            call.name.as_str(),
+            display.brief.clone(),
+            display.kind_label.clone(),
+            "Failed".to_string(),
+            Some(display.command_preview.clone()),
+            anyhow::anyhow!("upstream image cooldown"),
+        );
+
+        assert_eq!(execution.exit_code, Some(1));
+        assert_eq!(
+            tool_status_from_execution(call.name.as_str(), &execution),
+            ToolRunStatus::Error
+        );
+
+        let envelope = build_tool_output_envelope(
+            &call,
+            &display,
+            &execution,
+            crate::PersonaKind::Matrix,
+            10,
+            12,
+            250,
+        );
+        assert_eq!(envelope.status, ToolRunStatus::Error);
+        assert!(
+            envelope
+                .error
+                .as_deref()
+                .is_some_and(|text| text.contains("upstream image cooldown"))
+        );
+    }
+
+    #[test]
     fn memory_read_tail_reads_only_latest_external_output() {
         with_test_home(|home_root| {
             let project_root = home_root.join(PROJECTYING_REL_PATH);
@@ -20610,12 +21774,47 @@ mod tests {
                 .expect("read coding state");
             assert!(coding_state.contains(tool_name));
             assert!(
-                !crate::context::projected_toolbox_local_tool_ids()
+                crate::context::projected_toolbox_local_tool_ids()
                     .expect("coding projected ids")
                     .contains(tool_name),
-                "targeted external tools should stay out of ordinary Coding provider projection"
+                "targeted toolbox change should open the tool for Coding's provider projection"
             );
-            assert!(!tool_names(&codex_tools_for_provider()).contains(&tool_name.to_string()));
+            assert!(tool_names(&codex_tools_for_provider()).contains(&tool_name.to_string()));
+
+            crate::context::set_persona(crate::PersonaKind::Matrix);
+            set_tool_persona(crate::PersonaKind::Matrix);
+        });
+    }
+
+    #[test]
+    fn tool_manage_self_service_is_available_to_focus_personas_but_not_cross_persona() {
+        with_test_home(|_| {
+            crate::context::set_persona(crate::PersonaKind::Coding);
+            set_tool_persona(crate::PersonaKind::Coding);
+            set_tool_projection_override(None);
+            crate::context::clear_messages().expect("clear coding");
+
+            assert!(tool_names(&codex_tools_for_provider()).contains(&"tool_manage".to_string()));
+            let before = crate::context::projected_toolbox_local_tool_ids()
+                .expect("coding projected ids before");
+            assert!(!before.contains("pty_input"));
+
+            crate::context::tool_manage("open", &["pty_input".to_string()], None, None, None)
+                .expect("coding opens its own closed tool");
+            let after =
+                crate::context::projected_toolbox_local_tool_ids().expect("coding ids after open");
+            assert!(after.contains("pty_input"));
+            assert!(tool_names(&codex_tools_for_provider()).contains(&"pty_input".to_string()));
+
+            let err = crate::context::tool_manage(
+                "open",
+                &["server_manage".to_string()],
+                Some("server"),
+                None,
+                None,
+            )
+            .expect_err("coding cannot target server toolbox");
+            assert!(format!("{err:#}").contains("只能管理自己的 toolbox"));
 
             crate::context::set_persona(crate::PersonaKind::Matrix);
             set_tool_persona(crate::PersonaKind::Matrix);
@@ -20651,6 +21850,7 @@ mod tests {
             .filter_map(|tool| tool.get("name").and_then(Value::as_str))
             .collect::<Vec<_>>();
         assert!(names.contains(&"server_manage"));
+        assert!(names.contains(&"server_split"));
         assert!(!names.contains(&"context_manage"));
 
         let command = tools
@@ -20690,7 +21890,130 @@ mod tests {
                 .get("server_name")
                 .is_some()
         );
+
         set_tool_persona(crate::PersonaKind::Matrix);
+        let matrix_tools = codex_tools();
+        let matrix_names = matrix_tools
+            .as_array()
+            .expect("tool array")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(matrix_names.contains(&"server_split"));
+        let matrix_provider_tools = codex_tools_for_provider();
+        let matrix_provider_names = matrix_provider_tools
+            .as_array()
+            .expect("tool array")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(!matrix_provider_names.contains(&"server_split"));
+        let err = execute_server_split(r#"{"action":"list"}"#)
+            .expect_err("Matrix cannot use server_split");
+        assert!(err.to_string().contains("Server"));
+        set_tool_persona(crate::PersonaKind::Matrix);
+    }
+
+    #[test]
+    fn server_split_creates_queues_and_closes_without_deleting_context() {
+        with_test_home(|home_root| {
+            let project_root = home_root.join(PROJECTYING_REL_PATH);
+            set_tool_persona(crate::PersonaKind::Server);
+            set_tool_projection_override(None);
+
+            let create = execute_server_split(
+                json!({
+                    "action": "split_batch",
+                    "count": 2,
+                    "tasks": ["检查 alpha 服务器状态", "检查 beta 服务器日志"],
+                    "server_ids": ["alpha", "beta"]
+                })
+                .to_string()
+                .as_str(),
+            )
+            .expect("create server split roles");
+            assert!(create.output_preview.contains("server_yu_a"));
+            assert!(create.output_preview.contains("server_yu_b"));
+            assert!(create.output_preview.contains("queued_assignments"));
+
+            let roles = crate::roles::server_split_role_specs();
+            assert_eq!(roles.len(), 2);
+            let role_a = roles
+                .iter()
+                .find(|role| role.id == "server_yu_a")
+                .expect("role A");
+            assert!(role_a.enabled);
+            assert_eq!(role_a.copy_source.as_deref(), Some("server"));
+            let contract = role_a.contract();
+            assert_eq!(contract.capability.base_persona, crate::PersonaKind::Server);
+            assert!(role_a.default_tools.contains(&"server_manage".to_string()));
+            assert!(role_a.default_tools.contains(&"server_split".to_string()));
+            assert!(role_a.default_tools.contains(&"persona_manage".to_string()));
+            assert!(
+                crate::roles::visible_role_tabs()
+                    .iter()
+                    .any(|role| role.id == "server_yu_a" && role.glyph_label == "御A")
+            );
+
+            let queue = fs::read_to_string(project_root.join("config/persona-commands.jsonl"))
+                .expect("read persona queue");
+            assert!(queue.contains("\"target_role\":\"server_yu_a\""));
+            assert!(queue.contains("\"target_role\":\"server_yu_b\""));
+            assert!(queue.contains("server_id: alpha"));
+            assert!(queue.contains("server_id: beta"));
+
+            let close = execute_server_split(
+                json!({
+                    "action": "close",
+                    "split_ids": ["御A"]
+                })
+                .to_string()
+                .as_str(),
+            )
+            .expect("close role A");
+            assert!(close.output_preview.contains("disabled only"));
+            let roles = crate::roles::server_split_role_specs();
+            let role_a = roles
+                .iter()
+                .find(|role| role.id == "server_yu_a")
+                .expect("closed role A");
+            assert!(!role_a.enabled);
+            assert!(project_root.join("context/Role_server_yu_a").exists());
+            assert!(project_root.join("memory/Role_server_yu_a").exists());
+
+            let send_closed = execute_server_split(
+                json!({
+                    "action": "communicate",
+                    "target": "御A",
+                    "message": "继续检查"
+                })
+                .to_string()
+                .as_str(),
+            )
+            .expect_err("closed split cannot receive new message");
+            assert!(send_closed.to_string().contains("已关闭"));
+
+            let reopen = execute_server_split(
+                json!({
+                    "action": "split",
+                    "label": "A"
+                })
+                .to_string()
+                .as_str(),
+            )
+            .expect("reopen A");
+            assert!(reopen.output_preview.contains("reopened"));
+            let role_a = crate::roles::server_split_role_specs()
+                .into_iter()
+                .find(|role| role.id == "server_yu_a")
+                .expect("reopened role A");
+            assert!(role_a.enabled);
+
+            let close_all =
+                execute_server_split(r#"{"action":"close_all"}"#).expect("close all split roles");
+            assert!(close_all.output_preview.contains("active: 0"));
+            set_tool_persona(crate::PersonaKind::Matrix);
+        });
     }
 
     #[test]
@@ -21879,7 +23202,7 @@ mod tests {
 
     #[test]
     fn persona_manage_observe_returns_folded_summary_without_full_tool_output() {
-        with_test_home(|_| {
+        with_test_home(|home_root| {
             crate::context::set_persona(crate::PersonaKind::Coding);
             set_tool_persona(crate::PersonaKind::Coding);
             crate::context::clear_messages().expect("clear coding");
@@ -21898,6 +23221,19 @@ mod tests {
                 "SECRET_FULL_TOOL_OUTPUT_SHOULD_NOT_APPEAR",
             )
             .expect("append folded tool");
+            crate::aidebug::write_persona_dispatch_event(
+                home_root.join(PROJECTYING_REL_PATH).as_path(),
+                json!({
+                    "id": "persona-observe-test",
+                    "phase": "completed",
+                    "status": "completed",
+                    "action": "send",
+                    "source_persona": "Matrix",
+                    "target_persona": "Coding",
+                    "request_id": 7,
+                }),
+            )
+            .expect("write dispatch event");
 
             crate::context::set_persona(crate::PersonaKind::Matrix);
             set_tool_persona(crate::PersonaKind::Matrix);
@@ -21920,6 +23256,8 @@ mod tests {
                     .model_output
                     .contains("datememory_context_over_limit:")
             );
+            assert!(execution.model_output.contains("recent_persona_dispatch"));
+            assert!(execution.model_output.contains("persona-observe-test"));
             assert!(execution.model_output.contains("cat huge.log"));
             assert!(
                 !execution
@@ -21954,6 +23292,16 @@ mod tests {
             assert!(data.contains("\"action\":\"send\""));
             assert!(data.contains("\"interrupt_active\":true"));
             assert!(data.contains("Matrix 已接手工具治理"));
+
+            let dispatch = fs::read_to_string(
+                home_root
+                    .join(PROJECTYING_REL_PATH)
+                    .join("Aidebug/persona_dispatch.jsonl"),
+            )
+            .expect("read dispatch");
+            assert!(dispatch.contains("\"phase\":\"queued\""));
+            assert!(dispatch.contains("\"target_persona\":\"Coding\""));
+            assert!(dispatch.contains("\"source_persona\":\"Matrix\""));
         });
     }
 

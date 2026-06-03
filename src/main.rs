@@ -1326,6 +1326,8 @@ pub(crate) const TOKEN_INPUT_HARD_TOKENS: u64 = 200_000;
 const IDLE_POLL_MS: u64 = 250;
 const AIDEBUG_UI_DRAW_WARN_MS: u64 = 50;
 const AIDEBUG_UI_TICK_WARN_MS: u64 = 120;
+const MODEL_OUTPUTS_PER_TICK_LIMIT: usize = 32;
+const MODEL_OUTPUT_DRAIN_BUDGET_MS: u64 = 18;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -1406,11 +1408,10 @@ impl PersonaKind {
     }
 
     pub(crate) fn tool_management_enabled(self) -> bool {
-        matches!(self, Self::Matrix)
-            && matches!(
-                self.tool_profile(),
-                crate::persona::PersonaToolProfile::Governance
-            )
+        matches!(
+            self,
+            Self::Matrix | Self::Advisor | Self::Coding | Self::Server
+        )
     }
 
     pub(crate) fn chat_theme_spec(
@@ -2420,10 +2421,9 @@ impl App {
             .as_ref()
             .and_then(|active| {
                 self.chat.get(active.assistant_index).map(|msg| {
-                    let thinking_chars =
-                        msg.thinking.as_deref().unwrap_or_default().chars().count();
-                    let text_chars = msg.display.chars().count();
-                    Self::estimate_tokens_from_chars(thinking_chars.saturating_add(text_chars))
+                    Self::estimate_tokens_from_chars(
+                        msg.thinking_chars.saturating_add(msg.display_chars),
+                    )
                 })
             })
             .filter(|tokens| *tokens > 0)
@@ -2551,6 +2551,57 @@ impl App {
             "default" => "D",
             _ => "?",
         }
+    }
+
+    fn status_resource_metrics_line(&self, width: usize) -> String {
+        let active_usage = self.usage_for_key(self.active_view_usage_key().as_str());
+        let active_context_kb = active_usage.active_context_kb;
+        let context_soft_limit_kb = self.settings.context_soft_limit_kb().max(1);
+        let context_hard_limit_kb = self
+            .settings
+            .context_hard_limit_kb()
+            .max(context_soft_limit_kb);
+        let diary_bytes = memory::datememorycontext_total_size_bytes();
+        let diary_kb = (diary_bytes.saturating_add(1023) / 1024) as u64;
+        let diary_limit = self.settings.memory_context_limit_kb();
+        let round_input_tokens = self
+            .active_request
+            .as_ref()
+            .map(|active| active.estimated_input_tokens)
+            .filter(|tokens| *tokens > 0)
+            .unwrap_or(active_usage.current_input_tokens);
+        let round_output_tokens = self
+            .active_request
+            .as_ref()
+            .and_then(|active| {
+                self.chat.get(active.assistant_index).map(|msg| {
+                    Self::estimate_tokens_from_chars(
+                        msg.thinking_chars.saturating_add(msg.display_chars),
+                    )
+                })
+            })
+            .filter(|tokens| *tokens > 0)
+            .unwrap_or(active_usage.current_output_tokens);
+        let line = format!(
+            "✲ Per {}% {}/{} ● TOKEN ↑{} ↓{} Ctx {}% {} Date {}% {}",
+            Self::pressure_percent(round_input_tokens, TOKEN_INPUT_HARD_TOKENS),
+            Self::format_token_ten_thousands(round_input_tokens),
+            active_usage.request_count,
+            Self::format_token_millions_short(round_input_tokens),
+            Self::format_token_millions_short(round_output_tokens),
+            Self::pressure_percent(active_context_kb, context_hard_limit_kb),
+            Self::format_size_k_short(active_context_kb),
+            Self::pressure_percent(diary_kb, diary_limit),
+            Self::format_size_k_short(diary_kb),
+        );
+        crate::input::truncate_to_width(line.as_str(), width)
+    }
+
+    pub fn bottom_status_line(&self, width: usize) -> String {
+        if width == 0 {
+            return String::new();
+        }
+        self.status_resource_metrics_line(width)
     }
 
     pub fn new() -> Self {
@@ -3029,31 +3080,44 @@ impl App {
             .unwrap_or_else(|| self.active_persona.supports_topbar())
     }
 
+    fn input_status_line_is_internal(line: &str) -> bool {
+        let trimmed = line.trim();
+        let normalized = trimmed
+            .strip_prefix("●")
+            .map(str::trim_start)
+            .unwrap_or(trimmed);
+        let lower = normalized.to_ascii_lowercase();
+        if lower.contains("aidebug") || lower.contains("debug_session") {
+            return true;
+        }
+        if normalized.contains("TOKEN") && normalized.contains("Ctx") && normalized.contains("Date")
+        {
+            return true;
+        }
+        (lower.contains("tool normal")
+            || lower.contains("tool verbose")
+            || lower.contains("tool minimal"))
+            && (lower.contains("idle") || lower.contains("run") || lower.contains("queue"))
+    }
+
+    fn frontend_input_status_lines(lines: Vec<String>) -> Vec<String> {
+        let mut visible = lines
+            .into_iter()
+            .filter(|line| !Self::input_status_line_is_internal(line))
+            .collect::<Vec<_>>();
+        if visible.is_empty() {
+            visible.push("● Ready".to_string());
+        }
+        visible
+    }
+
     pub(crate) fn input_status_lines(&self) -> Vec<String> {
-        let mut lines = match self.screen {
+        let lines = match self.screen {
             Screen::Main => self.status.lines(),
             Screen::Settings => vec![self.settings_status_line()],
-            Screen::Help => vec!["Help · ↑↓ / 1-4 切换 · Esc 返回".to_string()],
+            Screen::Help => vec![self.help_status_line()],
         };
-        if let Some(role_label) = self.visible_role_label() {
-            let prefix = format!("{role_label} · ");
-            if self.status.request_progress_starts_with("Connecting")
-                || self.status.request_progress_starts_with("Reconnecting")
-            {
-                return lines;
-            }
-            if let Some(first) = lines.first_mut() {
-                if first.trim() == "● Ready" {
-                    return lines;
-                }
-                if !first.starts_with(prefix.as_str()) {
-                    *first = format!("{prefix}{first}");
-                }
-            } else {
-                lines.push("● Ready".to_string());
-            }
-        }
-        lines
+        Self::frontend_input_status_lines(lines)
     }
 
     pub(crate) fn help_section(&self) -> HelpSection {
@@ -3128,9 +3192,8 @@ impl App {
         chat.get(request.assistant_index)
             .map(|msg| {
                 let tool_runs = msg.tool_runs.len() as u64;
-                let thinking_chars =
-                    msg.thinking.as_deref().unwrap_or_default().chars().count() as u64;
-                let text_chars = msg.display.chars().count() as u64;
+                let thinking_chars = msg.thinking_chars as u64;
+                let text_chars = msg.display_chars as u64;
                 let observation = if tool_runs > 0 {
                     "tooling"
                 } else if text_chars > 0 {
@@ -3396,12 +3459,19 @@ impl App {
         //     - StreamChunk：允许在同一 tick 批量推进，保证正文流畅；
         //     - ToolCallStart / ToolCallDone / Completed / Failed / Retrying：命中后立刻让出一帧，
         //       确保工具 UI 有机会先渲染，再进入下一阶段。
+        let model_drain_started_at = Instant::now();
+        let mut model_outputs_drained = 0usize;
         while let Ok(output) = self.model_task_rx.try_recv() {
             let yield_after = Self::should_yield_after_model_output(&output);
             self.apply_model_task_output(output);
+            model_outputs_drained = model_outputs_drained.saturating_add(1);
             changed = true;
             changed |= self.drain_runtime_side_events();
-            if yield_after {
+            if yield_after
+                || model_outputs_drained >= MODEL_OUTPUTS_PER_TICK_LIMIT
+                || model_drain_started_at.elapsed()
+                    >= Duration::from_millis(MODEL_OUTPUT_DRAIN_BUDGET_MS)
+            {
                 break;
             }
         }
@@ -3665,6 +3735,26 @@ impl App {
     fn dispatch_persona_command(&mut self, request: PersonaCommandRequest) -> bool {
         let Some(persona) = PersonaKind::parse_alias(request.persona.as_str()) else {
             self.apply_status_message(format!("persona_manage 目标无效：{}", request.persona));
+            let _ = aidebug::write_persona_dispatch_event(
+                app_project_root().as_path(),
+                json!({
+                    "id": request.id.as_str(),
+                    "phase": "failed",
+                    "status": "failed",
+                    "action": if matches!(request.action, PersonaCommandAction::Interrupt) { "interrupt" } else { "send" },
+                    "source_persona": request.source_persona.as_deref(),
+                    "source_role": request.source_role.as_deref(),
+                    "source_role_label": request.source_role_label.as_deref(),
+                    "source_role_context_dir": request.source_role_context_dir.as_deref(),
+                    "target_persona": request.persona.as_str(),
+                    "target_role": request.target_role.as_deref(),
+                    "target_role_label": request.target_role_label.as_deref(),
+                    "target_role_context_dir": request.target_role_context_dir.as_deref(),
+                    "error": format!("persona_manage 目标无效：{}", request.persona),
+                    "note": "dispatch rejected before launch",
+                    "created_at_ms": request.created_at_ms,
+                }),
+            );
             return true;
         };
         let target_role_spec = request
@@ -3676,6 +3766,11 @@ impl App {
             .as_ref()
             .map(|role| role.contract().capability.base_persona)
             .unwrap_or(persona);
+        let source = request
+            .source_persona
+            .as_deref()
+            .and_then(PersonaKind::parse_alias)
+            .unwrap_or(PersonaKind::Matrix);
         let mut changed = false;
         if matches!(request.action, PersonaCommandAction::Interrupt) || request.interrupt_active {
             changed |= if let Some(role) = target_role_spec.as_ref() {
@@ -3697,7 +3792,34 @@ impl App {
                 } else {
                     self.apply_status_message(format!("已打断 {}", persona.tab_title()));
                 }
+            } else {
+                self.apply_status_message(format!(
+                    "{} 无需打断 {}",
+                    source.tab_title(),
+                    persona.tab_title()
+                ));
             }
+            let _ = aidebug::write_persona_dispatch_event(
+                app_project_root().as_path(),
+                json!({
+                    "id": request.id.as_str(),
+                    "phase": "completed",
+                    "status": "completed",
+                    "action": if matches!(request.action, PersonaCommandAction::Interrupt) { "interrupt" } else { "send" },
+                    "priority": if request.interrupt_active { "urgent" } else { "normal" },
+                    "interrupt_active": request.interrupt_active,
+                    "source_persona": request.source_persona.as_deref(),
+                    "source_role": request.source_role.as_deref(),
+                    "source_role_label": request.source_role_label.as_deref(),
+                    "source_role_context_dir": request.source_role_context_dir.as_deref(),
+                    "target_persona": persona.context_dir_name(),
+                    "target_role": request.target_role.as_deref(),
+                    "target_role_label": request.target_role_label.as_deref(),
+                    "target_role_context_dir": request.target_role_context_dir.as_deref(),
+                    "note": if changed { "interrupt_only" } else { "interrupt_noop" },
+                    "created_at_ms": request.created_at_ms,
+                }),
+            );
             return true;
         };
         let target_busy = if let Some(role) = target_role_spec.as_ref() {
@@ -3706,14 +3828,30 @@ impl App {
             self.persona_request_busy(persona)
         };
         if target_busy {
+            let _ = aidebug::write_persona_dispatch_event(
+                app_project_root().as_path(),
+                json!({
+                    "id": request.id.as_str(),
+                    "phase": "requeued",
+                    "status": "requeued",
+                    "action": if matches!(request.action, PersonaCommandAction::Interrupt) { "interrupt" } else { "send" },
+                    "priority": if request.interrupt_active { "urgent" } else { "normal" },
+                    "interrupt_active": request.interrupt_active,
+                    "source_persona": request.source_persona.as_deref(),
+                    "source_role": request.source_role.as_deref(),
+                    "source_role_label": request.source_role_label.as_deref(),
+                    "source_role_context_dir": request.source_role_context_dir.as_deref(),
+                    "target_persona": persona.context_dir_name(),
+                    "target_role": request.target_role.as_deref(),
+                    "target_role_label": request.target_role_label.as_deref(),
+                    "target_role_context_dir": request.target_role_context_dir.as_deref(),
+                    "note": "target_busy",
+                    "created_at_ms": request.created_at_ms,
+                }),
+            );
             let _ = Self::requeue_persona_command(&request);
             return false;
         }
-        let source = request
-            .source_persona
-            .as_deref()
-            .and_then(PersonaKind::parse_alias)
-            .unwrap_or(PersonaKind::Matrix);
         let source_role_id = request
             .source_role
             .as_deref()
@@ -3847,6 +3985,26 @@ impl App {
                 .map(SendPayloadSource::Persona)
                 .unwrap_or(SendPayloadSource::Persona(self.active_persona)),
         };
+        let _ = aidebug::write_persona_dispatch_event(
+            app_project_root().as_path(),
+            json!({
+                "id": request.id.as_str(),
+                "phase": "delivered",
+                "status": "delivered",
+                "action": if matches!(request.action, PersonaCommandAction::Interrupt) { "interrupt" } else { "send" },
+                "priority": if request.interrupt_active { "urgent" } else { "normal" },
+                "interrupt_active": request.interrupt_active,
+                "source_persona": request.source_persona.as_deref(),
+                "source_role": request.source_role.as_deref(),
+                "source_role_label": request.source_role_label.as_deref(),
+                "source_role_context_dir": request.source_role_context_dir.as_deref(),
+                "target_persona": persona.context_dir_name(),
+                "target_role": request.target_role.as_deref(),
+                "target_role_label": request.target_role_label.as_deref(),
+                "target_role_context_dir": request.target_role_context_dir.as_deref(),
+                "created_at_ms": request.created_at_ms,
+            }),
+        );
         let launched = if let Some(role) = target_role_spec.as_ref() {
             self.with_dynamic_role_runtime(role.id.as_str(), target_base_persona, |app| {
                 app.start_send_payload(payload)
@@ -3871,6 +4029,27 @@ impl App {
             }
             true
         } else {
+            let _ = aidebug::write_persona_dispatch_event(
+                app_project_root().as_path(),
+                json!({
+                    "id": request.id.as_str(),
+                    "phase": "failed",
+                    "status": "failed",
+                    "action": if matches!(request.action, PersonaCommandAction::Interrupt) { "interrupt" } else { "send" },
+                    "priority": if request.interrupt_active { "urgent" } else { "normal" },
+                    "interrupt_active": request.interrupt_active,
+                    "source_persona": request.source_persona.as_deref(),
+                    "source_role": request.source_role.as_deref(),
+                    "source_role_label": request.source_role_label.as_deref(),
+                    "source_role_context_dir": request.source_role_context_dir.as_deref(),
+                    "target_persona": persona.context_dir_name(),
+                    "target_role": request.target_role.as_deref(),
+                    "target_role_label": request.target_role_label.as_deref(),
+                    "target_role_context_dir": request.target_role_context_dir.as_deref(),
+                    "note": "launch_failed",
+                    "created_at_ms": request.created_at_ms,
+                }),
+            );
             self.apply_status_message(format!(
                 "{} 联络 {} 失败，已跳过本次指令",
                 source.tab_title(),
@@ -3918,10 +4097,31 @@ impl App {
                     "INFO",
                     "persona_command.stale_request_skipped",
                     json!({
-                        "id": request.id,
+                        "id": request.id.as_str(),
                         "persona": request.persona,
                         "created_at_ms": request.created_at_ms,
                         "app_started_at_ms": self.app_started_at_ms,
+                    }),
+                );
+                let _ = aidebug::write_persona_dispatch_event(
+                    app_project_root().as_path(),
+                    json!({
+                        "id": request.id.as_str(),
+                        "phase": "skipped",
+                        "status": "skipped",
+                        "action": if matches!(request.action, PersonaCommandAction::Interrupt) { "interrupt" } else { "send" },
+                        "priority": if request.interrupt_active { "urgent" } else { "normal" },
+                        "interrupt_active": request.interrupt_active,
+                        "source_persona": request.source_persona.as_deref(),
+                        "source_role": request.source_role.as_deref(),
+                        "source_role_label": request.source_role_label.as_deref(),
+                        "source_role_context_dir": request.source_role_context_dir.as_deref(),
+                        "target_persona": request.persona.as_str(),
+                        "target_role": request.target_role.as_deref(),
+                        "target_role_label": request.target_role_label.as_deref(),
+                        "target_role_context_dir": request.target_role_context_dir.as_deref(),
+                        "note": "stale_before_app_start",
+                        "created_at_ms": request.created_at_ms,
                     }),
                 );
                 changed = true;
@@ -5111,6 +5311,9 @@ rule: 完成后用简短结果汇报 Matrix，说明 affected entry_ids 和是�
             usage.active_context_entries = stats.active_entries;
             usage.active_context_kb = active_context_kb;
             usage.current_input_tokens = current_input_tokens;
+        }
+        if self.any_persona_api_active() {
+            return;
         }
         let maintenance_due = self
             .last_context_maintenance_scan_at
@@ -6768,7 +6971,7 @@ rule: 完成后用简短结果汇报 Matrix，说明 affected entry_ids 和是�
                     "tool_name": tool.name,
                     "tool_brief": tool.brief,
                     "tool_runs": msg.tool_runs.len(),
-                    "display_chars": msg.display.chars().count(),
+                    "display_chars": msg.display_chars,
                     "streaming": msg.streaming,
                 }),
             );
@@ -6776,6 +6979,8 @@ rule: 完成后用简短结果汇报 Matrix，说明 affected entry_ids 和是�
         self.status.clear_tool_progress();
         if terminal.running_session {
             self.apply_status_message(format!("终端已启动：{} · {}", tool.kind_label, tool.brief));
+        } else if Self::tool_call_done_failed(tool) {
+            self.apply_status_message(format!("工具失败：{} · {}", tool.kind_label, tool.brief));
         } else {
             self.apply_status_message(format!("工具完成：{} · {}", tool.kind_label, tool.brief));
         }
@@ -6833,8 +7038,26 @@ rule: 完成后用简短结果汇报 Matrix，说明 affected entry_ids 和是�
                     .collect();
             }
         }
-        self.sync_context_runtime_state_force();
+        if Self::tool_requires_immediate_context_runtime_sync(tool.name.as_str()) {
+            self.sync_context_runtime_state_force();
+        } else {
+            self.sync_context_runtime_state();
+        }
         appended_entry_ids
+    }
+
+    fn tool_requires_immediate_context_runtime_sync(tool_name: &str) -> bool {
+        matches!(
+            tool_name.trim().to_ascii_lowercase().as_str(),
+            "context_manage"
+                | "context_summary"
+                | "context_vision"
+                | "focus_mode"
+                | "persona_manage"
+                | "memory_add"
+                | "memory_delete"
+                | "memory_update"
+        )
     }
 
     fn model_task_request_id(output: &ModelTaskOutput) -> u64 {
@@ -7046,7 +7269,7 @@ rule: 完成后用简短结果汇报 Matrix，说明 affected entry_ids 和是�
                             "tool_name": tool_name,
                             "tool_brief": tool_brief,
                             "tool_runs": msg.tool_runs.len(),
-                            "display_chars": msg.display.chars().count(),
+                            "display_chars": msg.display_chars,
                             "streaming": msg.streaming,
                         }),
                     );
@@ -7217,6 +7440,40 @@ rule: 完成后用简短结果汇报 Matrix，说明 affected entry_ids 和是�
                         "output_tokens_estimated": Self::estimate_tokens_from_chars(output_chars),
                     }),
                 );
+                if active_debug_session_id
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with("persona-"))
+                {
+                    let active_role = self.active_dynamic_role_spec().map(|role| {
+                        let contract = role.contract();
+                        (
+                            contract.capability.base_persona,
+                            contract.identity.id,
+                            contract.identity.header_badge,
+                            contract.storage.context_dir,
+                        )
+                    });
+                    let _ = aidebug::write_persona_dispatch_event(
+                        app_project_root().as_path(),
+                        json!({
+                            "id": active_debug_session_id.as_deref(),
+                            "phase": "completed",
+                            "status": "completed",
+                            "action": "send",
+                            "request_id": request_id,
+                            "source_persona": "runtime",
+                            "target_persona": self.active_persona.context_dir_name(),
+                            "target_role": active_role.as_ref().map(|(_, role_id, _, _)| role_id.as_str()),
+                            "target_role_label": active_role.as_ref().map(|(_, _, role_label, _)| role_label.as_str()),
+                            "target_role_context_dir": active_role.as_ref().map(|(_, _, _, context_dir)| context_dir.as_str()),
+                            "provider": self.settings.active_provider_config().name.as_str(),
+                            "model": self.settings.active_provider_config().model.as_str(),
+                            "text_chars": final_text.chars().count(),
+                            "thinking_chars": completion.thinking.as_deref().unwrap_or_default().chars().count(),
+                            "plan_chars": completion.plan.as_deref().unwrap_or_default().chars().count(),
+                        }),
+                    );
+                }
                 if has_completion_payload {
                     let context_text =
                         embed_proposed_plan_block(final_text.as_str(), completion.plan.as_deref());
@@ -7281,6 +7538,40 @@ rule: 完成后用简短结果汇报 Matrix，说明 affected entry_ids 和是�
                         "error_label": failure_kind.label(),
                     }),
                 );
+                if active_debug_session_id
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with("persona-"))
+                {
+                    let active_role = self.active_dynamic_role_spec().map(|role| {
+                        let contract = role.contract();
+                        (
+                            contract.capability.base_persona,
+                            contract.identity.id,
+                            contract.identity.header_badge,
+                            contract.storage.context_dir,
+                        )
+                    });
+                    let _ = aidebug::write_persona_dispatch_event(
+                        app_project_root().as_path(),
+                        json!({
+                            "id": active_debug_session_id.as_deref(),
+                            "phase": "failed",
+                            "status": "failed",
+                            "action": "send",
+                            "request_id": request_id,
+                            "source_persona": "runtime",
+                            "target_persona": self.active_persona.context_dir_name(),
+                            "target_role": active_role.as_ref().map(|(_, role_id, _, _)| role_id.as_str()),
+                            "target_role_label": active_role.as_ref().map(|(_, _, role_label, _)| role_label.as_str()),
+                            "target_role_context_dir": active_role.as_ref().map(|(_, _, _, context_dir)| context_dir.as_str()),
+                            "provider": self.settings.active_provider_config().name.as_str(),
+                            "model": self.settings.active_provider_config().model.as_str(),
+                            "error": error.as_str(),
+                            "error_kind": failure_kind.slug(),
+                            "error_label": failure_kind.label(),
+                        }),
+                    );
+                }
                 let assistant_index = self
                     .ensure_request_assistant_slot(request_id)
                     .unwrap_or(usize::MAX);
@@ -7362,6 +7653,9 @@ rule: 完成后用简短结果汇报 Matrix，说明 affected entry_ids 和是�
 
     pub fn rebuild_palette(&mut self) {
         if self.screen != Screen::Main || !self.input.is_command_mode() {
+            if self.palette.items.is_empty() && self.palette.selected == 0 {
+                return;
+            }
             self.palette.items.clear();
             self.palette.selected = 0;
             return;
@@ -8757,6 +9051,30 @@ rule: 完成后用简短结果汇报 Matrix，说明 affected entry_ids 和是�
                 contract.storage.context_dir,
             )
         });
+        if let Some(dispatch_id) = request
+            .debug_session_id
+            .as_deref()
+            .filter(|value| value.starts_with("persona-"))
+        {
+            let _ = aidebug::write_persona_dispatch_event(
+                app_project_root().as_path(),
+                json!({
+                    "id": dispatch_id,
+                    "phase": "running",
+                    "status": "running",
+                    "action": "send",
+                    "request_id": request_id,
+                    "source_persona": "runtime",
+                    "target_persona": persona.context_dir_name(),
+                    "target_role": active_tool_role.as_ref().map(|(_, role_id, _, _)| role_id.as_str()),
+                    "target_role_label": active_tool_role.as_ref().map(|(_, _, role_label, _)| role_label.as_str()),
+                    "target_role_context_dir": active_tool_role.as_ref().map(|(_, _, _, context_dir)| context_dir.as_str()),
+                    "provider": request.provider_cfg.name.as_str(),
+                    "model": request.provider_cfg.model.as_str(),
+                    "round_id": request.round_id,
+                }),
+            );
+        }
         let tx = self.model_task_tx.clone();
         thread::spawn(move || {
             if let Some((base_persona, role_id, role_label, context_dir)) =
@@ -10555,6 +10873,137 @@ mod app_tests {
     }
 
     #[test]
+    fn bottom_status_line_shows_resource_metrics_without_aidebug_resource_details() {
+        crate::app_tests::with_test_context_home(|| {
+            let mut app = sample_app();
+            app.active_persona = PersonaKind::Server;
+            app.context_mode = ContextMode::Focus;
+            {
+                let usage = app.active_usage_mut();
+                usage.current_input_tokens = 40_000;
+                usage.current_output_tokens = 0;
+                usage.request_count = 2;
+                usage.active_context_kb = 90;
+            }
+
+            let line = app.bottom_status_line(80);
+
+            assert!(UnicodeWidthStr::width(line.as_str()) <= 80);
+            assert!(
+                line.contains("Per 20% 4.0W/2"),
+                "bottom status line: {line:?}"
+            );
+            assert!(
+                line.contains("TOKEN ↑0.0m ↓0.0m"),
+                "bottom status line: {line:?}"
+            );
+            assert!(line.contains("Ctx"), "bottom status line: {line:?}");
+            assert!(line.contains("Date"), "bottom status line: {line:?}");
+            assert!(!line.trim().is_empty(), "bottom status line: {line:?}");
+            assert!(!line.contains("Server"));
+            assert!(!line.contains("Focus"));
+            assert!(!line.contains("g5.5"));
+            assert!(!line.contains("Tool"));
+        });
+    }
+
+    #[test]
+    fn bottom_status_line_uses_same_frontend_resource_route_for_builtin_personas() {
+        crate::app_tests::with_test_context_home(|| {
+            let mut app = sample_app();
+            app.context_mode = ContextMode::Focus;
+            for persona in PersonaKind::ALL {
+                if app.active_persona != persona {
+                    assert!(app.switch_persona(persona));
+                }
+                let line = app.bottom_status_line(160);
+                assert!(line.contains("Per "), "bottom status line: {line}");
+                assert!(line.contains("TOKEN "), "bottom status line: {line}");
+                assert!(line.contains("Ctx "), "bottom status line: {line}");
+                assert!(line.contains("Date "), "bottom status line: {line}");
+                assert!(!line.contains("Focus"), "bottom status line: {line}");
+                assert!(!line.contains("Idle"), "bottom status line: {line}");
+                assert!(!line.contains("Tool"), "bottom status line: {line}");
+                assert!(!line.contains("g5.5"), "bottom status line: {line}");
+            }
+        });
+    }
+
+    #[test]
+    fn input_status_lines_hide_internal_debug_and_resource_statuses() {
+        crate::app_tests::with_test_context_home(|| {
+            let mut app = sample_app();
+            app.context_mode = ContextMode::Focus;
+
+            let internal_resource_line = app.status_resource_line(160);
+            assert!(
+                internal_resource_line.contains("TOKEN")
+                    && internal_resource_line.contains("Tool")
+                    && internal_resource_line.contains("Focus"),
+                "internal resource line: {internal_resource_line}"
+            );
+            app.apply_status_message(internal_resource_line);
+            assert_eq!(
+                app.input_status_lines().first().map(String::as_str),
+                Some("● Ready")
+            );
+
+            app.apply_status_message("Aidebug 已投递给 Coding · 绫".to_string());
+            assert_eq!(
+                app.input_status_lines().first().map(String::as_str),
+                Some("● Ready")
+            );
+
+            app.apply_status_message("等待用户确认".to_string());
+            assert_eq!(
+                app.input_status_lines().first().map(String::as_str),
+                Some("● 等待用户确认")
+            );
+        });
+    }
+
+    #[test]
+    fn dynamic_role_status_bars_use_standard_frontend_routes() {
+        crate::app_tests::with_test_context_home(|| {
+            let context_root = app_project_root().join("context");
+            fs::create_dir_all(context_root.as_path()).expect("create context");
+            fs::write(
+                context_root.join("roles.json"),
+                r#"{"version":1,"roles":[{"id":"worker","display_name":"工","glyph":"工","context_dir":"Role_worker","base_persona":"matrix","default_tools":[],"enabled":true}]}"#,
+            )
+            .expect("write roles");
+            let _ = roles::reload_governance_catalog();
+            let mut app = App::new();
+
+            assert!(app.select_dynamic_role("worker"));
+            app.context_mode = ContextMode::Focus;
+            let internal_resource_line = app.status_resource_line(160);
+            assert!(
+                internal_resource_line.contains("工"),
+                "status line: {internal_resource_line}"
+            );
+            assert!(
+                internal_resource_line.contains("Tool"),
+                "status line: {internal_resource_line}"
+            );
+            app.apply_status_message(internal_resource_line);
+
+            assert_eq!(
+                app.input_status_lines().first().map(String::as_str),
+                Some("● Ready")
+            );
+            let bottom = app.bottom_status_line(160);
+            assert!(bottom.contains("Per "), "bottom status line: {bottom}");
+            assert!(bottom.contains("TOKEN "), "bottom status line: {bottom}");
+            assert!(bottom.contains("Ctx "), "bottom status line: {bottom}");
+            assert!(bottom.contains("Date "), "bottom status line: {bottom}");
+            assert!(!bottom.contains("工"), "bottom status line: {bottom}");
+            assert!(!bottom.contains("Focus"), "bottom status line: {bottom}");
+            assert!(!bottom.contains("Tool"), "bottom status line: {bottom}");
+        });
+    }
+
+    #[test]
     fn provider_body_phase_refreshes_live_per_without_session_accumulation() {
         crate::app_tests::with_test_context_home(|| {
             let mut app = sample_app();
@@ -11419,12 +11868,14 @@ mod app_tests {
                 "view_image",
                 "apply_patch",
                 "update_plan",
+                "tool_manage",
                 "focus_mode",
                 "memory_check",
                 "memory_read",
                 "pty_list",
                 "pty_kill",
                 "persona_manage",
+                "server_split",
                 "draw_image",
                 "context_compact",
                 "context_summary",
@@ -13673,7 +14124,7 @@ mod app_tests {
     }
 
     #[test]
-    fn dynamic_role_view_surfaces_its_own_topbar_and_status_prefix() {
+    fn dynamic_role_view_surfaces_its_own_topbar_and_standard_status() {
         with_test_context_home(|| {
             let context_root = app_project_root().join("context");
             fs::create_dir_all(context_root.as_path()).expect("create context");
@@ -13739,7 +14190,7 @@ mod app_tests {
     }
 
     #[test]
-    fn dynamic_role_input_status_does_not_duplicate_identity_on_connection_state() {
+    fn dynamic_role_input_status_uses_standard_status_route() {
         with_test_context_home(|| {
             let context_root = app_project_root().join("context");
             fs::create_dir_all(context_root.as_path()).expect("create context");
@@ -13767,7 +14218,7 @@ mod app_tests {
             app.apply_status_message("等待用户确认".to_string());
             assert_eq!(
                 app.input_status_lines().first().map(String::as_str),
-                Some("工 · ● 等待用户确认")
+                Some("● 等待用户确认")
             );
         });
     }
@@ -16948,6 +17399,9 @@ pub(crate) mod chat {
         pub thinking: Option<String>,
         pub proposed_plan: Option<String>,
         pub display: String,
+        pub thinking_chars: usize,
+        pub proposed_plan_chars: usize,
+        pub display_chars: usize,
         pub streaming: bool,
         pub tool_runs: Vec<ToolRun>,
         pub pasted_placeholders: Vec<String>,
@@ -16956,8 +17410,13 @@ pub(crate) mod chat {
     }
 
     impl ChatMessage {
+        fn count_chars(text: &str) -> usize {
+            text.chars().count()
+        }
+
         pub fn system(sys_type: impl Into<String>, text: impl Into<String>) -> Self {
             let display = text.into();
+            let display_chars = Self::count_chars(display.as_str());
             let segments = if display.is_empty() {
                 Vec::new()
             } else {
@@ -16972,6 +17431,9 @@ pub(crate) mod chat {
                 thinking: None,
                 proposed_plan: None,
                 display,
+                thinking_chars: 0,
+                proposed_plan_chars: 0,
+                display_chars,
                 streaming: false,
                 tool_runs: Vec::new(),
                 pasted_placeholders: Vec::new(),
@@ -17003,6 +17465,7 @@ pub(crate) mod chat {
             source_channel: SourceChannel,
         ) -> Self {
             let display = display.into();
+            let display_chars = Self::count_chars(display.as_str());
             let segments = if display.is_empty() {
                 Vec::new()
             } else {
@@ -17017,6 +17480,9 @@ pub(crate) mod chat {
                 thinking: None,
                 proposed_plan: None,
                 display,
+                thinking_chars: 0,
+                proposed_plan_chars: 0,
+                display_chars,
                 streaming: false,
                 tool_runs: Vec::new(),
                 pasted_placeholders,
@@ -17041,6 +17507,11 @@ pub(crate) mod chat {
         ) -> Self {
             let text = text.into();
             let segments = build_segments_from_parts(thinking.as_deref(), &text);
+            let thinking_chars = thinking
+                .as_deref()
+                .map(Self::count_chars)
+                .unwrap_or_default();
+            let display_chars = Self::count_chars(text.as_str());
             let mut block_order = Vec::new();
             if thinking
                 .as_deref()
@@ -17060,6 +17531,9 @@ pub(crate) mod chat {
                 thinking,
                 proposed_plan: None,
                 display: text,
+                thinking_chars,
+                proposed_plan_chars: 0,
+                display_chars,
                 streaming: false,
                 tool_runs: Vec::new(),
                 pasted_placeholders: Vec::new(),
@@ -17078,6 +17552,9 @@ pub(crate) mod chat {
                 thinking: None,
                 proposed_plan: None,
                 display: String::new(),
+                thinking_chars: 0,
+                proposed_plan_chars: 0,
+                display_chars: 0,
                 streaming: true,
                 tool_runs: Vec::new(),
                 pasted_placeholders: Vec::new(),
@@ -17090,6 +17567,9 @@ pub(crate) mod chat {
             self.thinking = None;
             self.proposed_plan = None;
             self.display.clear();
+            self.thinking_chars = 0;
+            self.proposed_plan_chars = 0;
+            self.display_chars = 0;
             self.segments
                 .retain(|segment| matches!(segment, MessageSegment::ToolCall(_)));
             self.block_order
@@ -17103,6 +17583,9 @@ pub(crate) mod chat {
             };
             self.push_block_once(MessageBlock::Display);
             self.display.push_str(delta.as_str());
+            self.display_chars = self
+                .display_chars
+                .saturating_add(Self::count_chars(delta.as_str()));
             self.append_display_segment(delta.as_str());
         }
 
@@ -17115,6 +17598,9 @@ pub(crate) mod chat {
             self.thinking
                 .get_or_insert_with(String::new)
                 .push_str(delta.as_str());
+            self.thinking_chars = self
+                .thinking_chars
+                .saturating_add(Self::count_chars(delta.as_str()));
             self.append_thinking_segment(delta.as_str());
         }
 
@@ -17127,6 +17613,9 @@ pub(crate) mod chat {
             self.proposed_plan
                 .get_or_insert_with(String::new)
                 .push_str(delta.as_str());
+            self.proposed_plan_chars = self
+                .proposed_plan_chars
+                .saturating_add(Self::count_chars(delta.as_str()));
             self.append_plan_segment(delta.as_str());
         }
 
@@ -17171,6 +17660,17 @@ pub(crate) mod chat {
             self.thinking = thinking;
             self.proposed_plan = proposed_plan;
             self.display = text;
+            self.thinking_chars = self
+                .thinking
+                .as_deref()
+                .map(Self::count_chars)
+                .unwrap_or_default();
+            self.proposed_plan_chars = self
+                .proposed_plan
+                .as_deref()
+                .map(Self::count_chars)
+                .unwrap_or_default();
+            self.display_chars = Self::count_chars(self.display.as_str());
         }
 
         fn ordered_blocks(&self) -> Vec<MessageBlock> {
@@ -28942,7 +29442,7 @@ mod context {
             return format!(
                 "你是 ProjectYing 动态角色「{label}」。Matrix 是创建与调度你的母体主控，司负责高价值上下文与日记治理，Coding/Server/其它动态角色可能与你协同。\n\
 你拥有独立上下文、独立状态页和独立任务视角，但你会在 provider 系统区看到 Matrix 维护的 SharedBoard（fastmemory public 公共情报板）。执行前先读取公共情报板，发现跨角色事实、阻塞、产物位置或职责变化时汇报 Matrix，由 Matrix 维护共享板。\n\
-按角色职责直接回答或执行；不要把同一任务再次转投给自己；工具使用以 Matrix 分配的 toolbox 为准，不自行假设隐藏工具可用。"
+按角色职责直接回答或执行；不要把同一任务再次转投给自己；工具使用以 Matrix 分配的 toolbox 为准，确需 closed 工具时先用 tool_manage 自助打开自己的工具箱，不自行假设 hidden 工具可用。"
             );
         }
         persona.system_prompt_asset().trim().to_string()
@@ -30159,6 +30659,8 @@ mod context {
             if manager_enabled && focus_gate_active_from_state() {
                 open_focus_gate_recovery_tools(&mut state_map);
             }
+            let context_governance = load_current_context_governance_config()?;
+            apply_context_governance_auto_projection(&mut state_map, &context_governance);
             Ok(Self {
                 specs,
                 state_map,
@@ -30202,6 +30704,8 @@ mod context {
             if manager_enabled && focus_gate_active_from_state() {
                 open_focus_gate_recovery_tools(&mut state_map);
             }
+            let context_governance = load_current_context_governance_config()?;
+            apply_context_governance_auto_projection(&mut state_map, &context_governance);
             Ok(Self {
                 specs,
                 state_map,
@@ -30322,7 +30826,7 @@ mod context {
             tool_ids: &[String],
         ) -> Result<Vec<String>> {
             if !self.manager_enabled {
-                anyhow::bail!("tool_manage 当前只对 Matrix · 萤 生效");
+                anyhow::bail!("当前 toolbox 未启用 tool_manage");
             }
             let known = self
                 .specs
@@ -30410,12 +30914,49 @@ mod context {
         values.into_iter().collect()
     }
 
-    fn role_governance_auto_tools(role: &crate::roles::DynamicRoleSpec) -> Vec<String> {
-        match role.context_governance.mode.as_str() {
-            "summary_compact" => vec!["context_summary".to_string(), "context_compact".to_string()],
-            "vision_compact" => vec!["context_vision".to_string(), "context_compact".to_string()],
+    fn load_current_context_governance_config() -> Result<ContextGovernanceConfig> {
+        let state: PersonaStateFile = crate::read_json_or_default_shared(&state_path())?;
+        Ok(normalize_context_governance_config(
+            state.meta.context_governance,
+        ))
+    }
+
+    fn context_governance_auto_tools_for_mode(mode: &str) -> Vec<String> {
+        match mode.trim().to_ascii_lowercase().as_str() {
+            "self_compact" | "summary_compact" | "compact" | "self" => {
+                vec!["context_summary".to_string(), "context_compact".to_string()]
+            }
+            "vision_compact" | "context_vision" | "vision" | "fast" => {
+                vec!["context_vision".to_string(), "context_compact".to_string()]
+            }
             _ => Vec::new(),
         }
+    }
+
+    fn apply_context_governance_auto_projection(
+        state_map: &mut BTreeMap<String, ToolboxToolState>,
+        governance: &ContextGovernanceConfig,
+    ) {
+        for tool_id in context_governance_auto_tools_for_mode(governance.mode.as_str()) {
+            if let Some(state) = state_map.get_mut(tool_id.as_str())
+                && !matches!(*state, ToolboxToolState::Hidden)
+            {
+                *state = ToolboxToolState::Expanded;
+            }
+        }
+    }
+
+    fn context_governance_config_json(config: &ContextGovernanceConfig) -> Value {
+        json!({
+            "mode": config.mode,
+            "manage_threshold_kb": config.manage_threshold_kb,
+            "compact_threshold_kb": config.compact_threshold_kb,
+            "report_to_matrix": config.report_to_matrix,
+        })
+    }
+
+    fn role_governance_auto_tools(role: &crate::roles::DynamicRoleSpec) -> Vec<String> {
+        context_governance_auto_tools_for_mode(role.context_governance.mode.as_str())
     }
 
     fn default_tool_ids_for_persona(
@@ -30474,7 +31015,12 @@ mod context {
         observe_gateway: &ToolboxProjectionGateway,
         provider_exposed_tools: Vec<String>,
         projection_override: Option<&crate::mcp::ToolProjectionOverride>,
-    ) -> Value {
+    ) -> Result<Value> {
+        let builtin_context_governance = if role.is_none() {
+            Some(load_current_context_governance_config()?)
+        } else {
+            None
+        };
         let provider_set = provider_exposed_tools
             .iter()
             .cloned()
@@ -30492,7 +31038,14 @@ mod context {
         } else {
             default_tool_ids_for_persona(persona, observe_gateway.specs.as_slice())
         };
-        let governance_auto_tools = role.map(role_governance_auto_tools).unwrap_or_default();
+        let governance_auto_tools = role
+            .map(role_governance_auto_tools)
+            .or_else(|| {
+                builtin_context_governance
+                    .as_ref()
+                    .map(|config| context_governance_auto_tools_for_mode(config.mode.as_str()))
+            })
+            .unwrap_or_default();
         let default_tool_set = default_tools.iter().cloned().collect::<BTreeSet<_>>();
         let governance_auto_set = governance_auto_tools
             .iter()
@@ -30553,7 +31106,14 @@ mod context {
                 })),
             )
         } else {
-            (None, None, None, None)
+            (
+                None,
+                None,
+                None,
+                builtin_context_governance
+                    .as_ref()
+                    .map(context_governance_config_json),
+            )
         };
         let persona_key = role_id
             .clone()
@@ -30567,7 +31127,7 @@ mod context {
         let callable_tools_count = callable_tools.len();
         let observed_tools_count = observe_states.len();
         let tool_entries_count = entries.len();
-        json!({
+        Ok(json!({
             "kind": kind,
             "persona": persona_key,
             "label": label,
@@ -30594,7 +31154,7 @@ mod context {
                 "tool_entries": tool_entries_count,
             },
             "projection_override_active": projection_override.is_some(),
-        })
+        }))
     }
 
     pub(crate) fn tool_projection_snapshot() -> Result<Value> {
@@ -30614,14 +31174,14 @@ mod context {
                         .unwrap_or_else(|| {
                             sorted_tool_ids(observe_gateway.allowed_local_tool_ids().into_iter())
                         });
-                    Ok(build_persona_tool_projection_snapshot(
+                    build_persona_tool_projection_snapshot(
                         "builtin_persona",
                         persona,
                         None,
                         &observe_gateway,
                         provider_exposed_tools,
                         projection_override.as_ref(),
-                    ))
+                    )
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -30652,14 +31212,14 @@ mod context {
                         .unwrap_or_else(|| {
                             sorted_tool_ids(provider_gateway.allowed_local_tool_ids().into_iter())
                         });
-                    Ok(build_persona_tool_projection_snapshot(
+                    build_persona_tool_projection_snapshot(
                         "dynamic_role",
                         base_persona,
                         Some(&role_kind),
                         &observe_gateway,
                         provider_exposed_tools,
                         projection_override.as_ref(),
-                    ))
+                    )
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -30820,18 +31380,38 @@ mod context {
     ) -> Result<ToolboxManageResult> {
         let actor = current_persona();
         if !actor.tool_management_enabled() {
-            anyhow::bail!("tool_manage 当前只对 Matrix · 萤 生效");
+            anyhow::bail!("tool_manage 当前角色未启用工具箱管理");
         }
-        let target_persona = persona
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+        let actor_role = current_dynamic_role_context();
+        let requested_persona = persona.map(str::trim).filter(|value| !value.is_empty());
+        let target_persona = requested_persona
             .map(|value| {
                 crate::PersonaKind::parse_alias(value)
                     .with_context(|| format!("未知 persona：{value}"))
             })
             .transpose()?
             .unwrap_or(actor);
-        with_persona_context(target_persona, || {
+        let can_manage_other_toolboxes = actor_role.is_none()
+            && matches!(
+                actor,
+                crate::PersonaKind::Matrix | crate::PersonaKind::Advisor
+            );
+        let explicit_cross_target =
+            requested_persona.is_some() && (actor_role.is_some() || target_persona != actor);
+        if explicit_cross_target && !can_manage_other_toolboxes {
+            anyhow::bail!(
+                "tool_manage 的 persona 参数只允许 Matrix · 萤 或 司跨角色使用；当前角色只能管理自己的 toolbox"
+            );
+        }
+        let target_label = if requested_persona.is_none() {
+            actor_role
+                .as_ref()
+                .map(|role| role.context_dir.clone())
+                .unwrap_or_else(|| target_persona.context_dir_name().to_string())
+        } else {
+            target_persona.context_dir_name().to_string()
+        };
+        let run_manage = || {
             let action = normalize_text(action).to_ascii_lowercase();
             let effective_action = if action == "reload" {
                 "list"
@@ -30845,7 +31425,7 @@ mod context {
             let mut model_lines = vec![
                 "tool_manage:ok".to_string(),
                 format!("action:{}", action.to_ascii_uppercase()),
-                format!("persona:{}", target_persona.context_dir_name()),
+                format!("persona:{target_label}"),
             ];
             if let Some(reason) = normalize_optional_text(reason) {
                 model_lines.push(format!("reason:{reason}"));
@@ -30868,7 +31448,12 @@ mod context {
                 model_output: model_lines.join("\n"),
                 output_preview: prompt,
             })
-        })
+        };
+        if explicit_cross_target {
+            with_persona_context(target_persona, run_manage)
+        } else {
+            run_manage()
+        }
     }
 
     pub fn open_role_tool_projection_for_persona(
@@ -30883,16 +31468,26 @@ mod context {
         tool_ids: &[String],
         extra_tools: &[String],
     ) -> Result<Vec<String>> {
-        if tool_ids.is_empty() {
+        let manageable_tool_ids = tool_ids
+            .iter()
+            .filter(|tool_id| !tool_id.trim().eq_ignore_ascii_case("tool_manage"))
+            .cloned()
+            .collect::<Vec<_>>();
+        let manageable_extra_tools = extra_tools
+            .iter()
+            .filter(|tool_id| !tool_id.trim().eq_ignore_ascii_case("tool_manage"))
+            .cloned()
+            .collect::<Vec<_>>();
+        if manageable_tool_ids.is_empty() {
             return Ok(Vec::new());
         }
         with_persona_context(persona, || {
             let mut gateway = ToolboxProjectionGateway::load_for_persona_with_extra_tools(
                 persona,
                 true,
-                extra_tools,
+                manageable_extra_tools.as_slice(),
             )?;
-            gateway.apply_manage_action("open", tool_ids)
+            gateway.apply_manage_action("open", manageable_tool_ids.as_slice())
         })
     }
 
@@ -34640,10 +35235,8 @@ mod context {
         fn default_matrix_system_prompt_reflects_settings_driven_output_budgets() {
             let prompt = default_matrix_system_prompt();
             assert!(prompt.contains("memory_check -> memory_read"));
-            assert!(
-                prompt
-                    .contains("工具、schema、prompt、动态角色与外部热重载工具的主控权收回 Matrix")
-            );
+            assert!(prompt.contains("schema、prompt、动态角色与外部热重载工具的主控权收回 Matrix"));
+            assert!(prompt.contains("每个 persona 都能用 `tool_manage` 自助管理自己的 toolbox"));
             assert!(prompt.contains(
                 "建立、列出、刷新、更新、移除动态角色走 `tool_manage role_create/role_list/role_reload/role_update/role_remove`"
             ));
@@ -35301,6 +35894,145 @@ mod context {
                 assert!(allowed.contains("tool_manage"));
                 assert!(!allowed.contains(primary.as_str()));
                 assert!(!allowed.contains(secondary.as_str()));
+            });
+        }
+
+        #[test]
+        fn static_persona_governance_state_opens_context_tools_in_projection() {
+            with_test_home(|| {
+                set_persona(crate::PersonaKind::Server);
+                crate::mcp::set_tool_persona(crate::PersonaKind::Server);
+                clear_messages().expect("clear");
+
+                let mut state = PersonaStateFile::default();
+                state.meta.context_governance = ContextGovernanceConfig {
+                    mode: "summary_compact".to_string(),
+                    manage_threshold_kb: 160,
+                    compact_threshold_kb: 120,
+                    report_to_matrix: true,
+                };
+                state.toolbox.entries = vec![
+                    ToolboxStateEntry {
+                        tool_id: "context_summary".to_string(),
+                        state: ToolboxToolState::Closed,
+                    },
+                    ToolboxStateEntry {
+                        tool_id: "context_compact".to_string(),
+                        state: ToolboxToolState::Closed,
+                    },
+                    ToolboxStateEntry {
+                        tool_id: "context_vision".to_string(),
+                        state: ToolboxToolState::Closed,
+                    },
+                ];
+                fs::create_dir_all(state_path().parent().expect("server state parent"))
+                    .expect("create server state dir");
+                write_persona_state(state_path().as_path(), &state).expect("write server state");
+
+                let prompt = load_toolbox_prompt().expect("load server toolbox prompt");
+                assert!(prompt.contains("- [expanded] context_summary"));
+                assert!(prompt.contains("- [expanded] context_compact"));
+                assert!(prompt.contains("- [closed] context_vision"));
+
+                let allowed = projected_toolbox_local_tool_ids().expect("allowed tools");
+                assert!(allowed.contains("context_summary"));
+                assert!(allowed.contains("context_compact"));
+                assert!(!allowed.contains("context_vision"));
+
+                let snapshot =
+                    crate::context::tool_projection_snapshot().expect("build projection snapshot");
+                let server = snapshot["personas"]
+                    .as_array()
+                    .expect("personas")
+                    .iter()
+                    .find(|entry| {
+                        entry.get("kind").and_then(Value::as_str) == Some("builtin_persona")
+                            && entry.get("persona").and_then(Value::as_str) == Some("server")
+                    })
+                    .expect("server snapshot");
+                assert_eq!(
+                    server["context_governance"]["mode"],
+                    json!("summary_compact")
+                );
+                let governance = server["governance_auto_tools"]
+                    .as_array()
+                    .expect("governance auto tools")
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert!(governance.contains("context_summary"));
+                assert!(governance.contains("context_compact"));
+                assert!(server["tool_entries"].as_array().is_some_and(|entries| {
+                    entries.iter().any(|entry| {
+                        entry.get("tool_id").and_then(Value::as_str) == Some("context_compact")
+                            && entry
+                                .get("observe_state")
+                                .and_then(Value::as_str)
+                                .is_some_and(|state| state == "expanded")
+                            && entry
+                                .get("reason")
+                                .and_then(Value::as_str)
+                                .is_some_and(|reason| reason.contains("governance=auto"))
+                    })
+                }));
+            });
+        }
+
+        #[test]
+        fn tool_projection_snapshot_shows_self_service_tool_manage_and_folded_server_split() {
+            with_test_home(|| {
+                let snapshot =
+                    crate::context::tool_projection_snapshot().expect("build projection snapshot");
+                let personas = snapshot["personas"].as_array().expect("personas");
+
+                for (persona, expected_server_split, expected_callable) in [
+                    ("matrix", "closed", false),
+                    ("advisor", "closed", false),
+                    ("coding", "closed", false),
+                    ("server", "expanded", true),
+                ] {
+                    let entry = personas
+                        .iter()
+                        .find(|entry| {
+                            entry.get("kind").and_then(serde_json::Value::as_str)
+                                == Some("builtin_persona")
+                                && entry.get("persona").and_then(serde_json::Value::as_str)
+                                    == Some(persona)
+                        })
+                        .expect("builtin persona snapshot");
+                    let callable = entry["callable_tools"]
+                        .as_array()
+                        .expect("callable tools")
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<std::collections::BTreeSet<_>>();
+                    let provider = entry["provider_exposed_tools"]
+                        .as_array()
+                        .expect("provider tools")
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<std::collections::BTreeSet<_>>();
+                    assert!(callable.contains("tool_manage"));
+                    assert!(provider.contains("tool_manage"));
+                    assert!(
+                        entry["observe_view"]["prompt"]
+                            .as_str()
+                            .expect("prompt")
+                            .contains("manager: tool_manage (callable)")
+                    );
+
+                    let server_split = entry["tool_entries"]
+                        .as_array()
+                        .expect("tool entries")
+                        .iter()
+                        .find(|tool| {
+                            tool.get("tool_id").and_then(serde_json::Value::as_str)
+                                == Some("server_split")
+                        })
+                        .expect("server_split entry");
+                    assert_eq!(server_split["observe_state"], json!(expected_server_split));
+                    assert_eq!(server_split["callable"], json!(expected_callable));
+                }
             });
         }
 
@@ -49577,6 +50309,27 @@ mod provider {
                 let tools = body["tools"].as_array().expect("tools array");
                 assert_eq!(tools[0]["type"], json!("web_search"));
                 assert_eq!(tools[0]["external_web_access"], json!(true));
+                assert!(
+                    tools
+                        .iter()
+                        .any(|tool| tool["name"] == json!("tool_manage")),
+                    "focus personas should be able to self-open closed toolbox tools"
+                );
+                if persona == crate::PersonaKind::Coding {
+                    let tool_manage = tools
+                        .iter()
+                        .find(|tool| tool["name"] == json!("tool_manage"))
+                        .expect("tool_manage schema");
+                    assert_eq!(
+                        tool_manage["parameters"]["properties"]["action"]["enum"],
+                        json!(["list", "reload", "open", "close", "pin", "unpin"])
+                    );
+                    assert!(
+                        tool_manage["parameters"]["properties"]
+                            .get("persona")
+                            .is_none()
+                    );
+                }
             }
             mcp::set_tool_persona(previous);
         }

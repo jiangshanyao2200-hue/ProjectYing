@@ -7,6 +7,8 @@ mod tests {
         assert!(prompt.contains("服务器管理"));
         assert!(prompt.contains("SSH"));
         assert!(prompt.contains("server_manage"));
+        assert!(prompt.contains("server_split"));
+        assert!(prompt.contains("御A"));
         assert!(prompt.contains("pty_run"));
         assert!(prompt.contains("server_id"));
         assert!(prompt.contains("active_server_id"));

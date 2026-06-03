@@ -689,10 +689,7 @@ pub fn palette_height(app: &App) -> u16 {
 }
 
 pub fn status_height(app: &App) -> u16 {
-    let base = match app.screen {
-        Screen::Main => app.input_status_lines().len(),
-        Screen::Settings | Screen::Help => 1,
-    };
+    let base = app.input_status_lines().len();
     base.clamp(1, INPUT_STATUS_MAX_HEIGHT as usize) as u16
 }
 
@@ -2007,11 +2004,7 @@ fn draw_input_status(frame: &mut Frame, theme: &Theme, area: Rect, app: &App) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let status_lines = match app.screen {
-        Screen::Main => app.input_status_lines(),
-        Screen::Settings => vec![app.settings_status_line()],
-        Screen::Help => vec![app.help_status_line()],
-    };
+    let status_lines = app.input_status_lines();
     let rendered = status_lines
         .into_iter()
         .enumerate()
@@ -2033,18 +2026,13 @@ fn draw_bottom_status(frame: &mut Frame, theme: &Theme, area: Rect, app: &App) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let mut line = app.status_resource_line(area.width as usize);
-    let line_width = UnicodeWidthStr::width(line.as_str());
-    let target_width = area.width as usize;
-    if line_width < target_width {
-        line.push_str(" ".repeat(target_width - line_width).as_str());
-    }
+    let line = app.bottom_status_line(area.width as usize);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             line,
-            Style::default().fg(theme.dim).bg(theme.bg),
+            Style::default().fg(theme.dim).bg(theme.panel_bg),
         )))
-        .style(Style::default().bg(theme.bg)),
+        .style(Style::default().bg(theme.panel_bg)),
         area,
     );
 }

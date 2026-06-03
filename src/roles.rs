@@ -12,6 +12,9 @@ const ROLE_REGISTRY_FILE: &str = "roles.json";
 const ROLE_RETIRED_DIR: &str = "_retired_roles";
 const ROLE_TAB_LIMIT: usize = 15;
 const REQUIRED_ROLE_TOOL_IDS: &[&str] = &["persona_manage"];
+pub(crate) const SERVER_SPLIT_ROLE_LIMIT: usize = 10;
+pub(crate) const SERVER_SPLIT_ID_PREFIX: &str = "server_yu_";
+pub(crate) const SERVER_SPLIT_CONTEXT_PREFIX: &str = "Role_server_yu_";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 struct RoleRegistryFile {
@@ -640,10 +643,22 @@ fn normalize_glyph(raw: &str) -> Option<String> {
     if value.is_empty() {
         return None;
     }
-    value
-        .chars()
-        .find(|ch| is_cjk_ideograph(*ch))
-        .map(|ch| ch.to_string())
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if !is_cjk_ideograph(ch) {
+            continue;
+        }
+        let mut label = ch.to_string();
+        while let Some(next) = chars.peek().copied() {
+            if !next.is_ascii_alphanumeric() || label.chars().count() >= 3 {
+                break;
+            }
+            label.push(next);
+            chars.next();
+        }
+        return Some(label);
+    }
+    None
 }
 
 fn is_cjk_ideograph(ch: char) -> bool {
@@ -1367,6 +1382,148 @@ pub(crate) fn enabled_roles() -> Vec<DynamicRoleSpec> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn is_server_split_role_spec(role: &DynamicRoleSpec) -> bool {
+    role_base_persona_kind(role) == crate::PersonaKind::Server
+        && (role.copy_source.as_deref() == Some(crate::PersonaKind::Server.slug())
+            || role.id.starts_with(SERVER_SPLIT_ID_PREFIX))
+}
+
+pub(crate) fn server_split_role_specs() -> Vec<DynamicRoleSpec> {
+    load_registry_cached()
+        .map(|registry| {
+            registry
+                .roles
+                .into_iter()
+                .filter(is_server_split_role_spec)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn server_split_role_count(registry: &RoleRegistryFile) -> usize {
+    registry
+        .roles
+        .iter()
+        .filter(|role| is_server_split_role_spec(role))
+        .count()
+}
+
+pub(crate) fn upsert_server_split_role(
+    raw_id: &str,
+    display_name: &str,
+    glyph: &str,
+    context_dir: &str,
+    default_tools: &[String],
+    prompt: &str,
+) -> Result<(DynamicRoleSpec, bool)> {
+    let mut registry = load_registry_uncached()?;
+    let id = normalize_role_id(raw_id)?;
+    if let Some(role) = registry.roles.iter_mut().find(|role| role.id == id) {
+        if !is_server_split_role_spec(role) {
+            anyhow::bail!("server_split 角色 id 已被非御网络角色占用：{id}");
+        }
+        role.display_name = normalize_display_name(display_name);
+        role.glyph = normalize_glyph(glyph);
+        role.base_persona = Some(crate::PersonaKind::Server.slug().to_string());
+        role.copy_source = Some(crate::PersonaKind::Server.slug().to_string());
+        role.default_tools = normalize_tool_ids(default_tools.iter());
+        role.enabled = true;
+        role.updated_at_ms = crate::unix_timestamp_millis_u64_shared();
+        sync_role_context_governance_tools(role);
+        validate_role_management_limits(role)?;
+        validate_role_tool_ids(role)?;
+        ensure_role_layout(role, None, false)?;
+        let updated = role.clone();
+        normalize_registry(&mut registry)?;
+        save_registry(&registry)?;
+        return Ok((updated, false));
+    }
+    if server_split_role_count(&registry) >= SERVER_SPLIT_ROLE_LIMIT {
+        anyhow::bail!(
+            "御网络分裂上限为 {} 个；请先 close 某个分裂御再复用槽位",
+            SERVER_SPLIT_ROLE_LIMIT
+        );
+    }
+    if registry
+        .roles
+        .iter()
+        .any(|role| role.context_dir.eq_ignore_ascii_case(context_dir))
+    {
+        anyhow::bail!("server_split context_dir 已被其它角色使用：{context_dir}");
+    }
+    let now = crate::unix_timestamp_millis_u64_shared();
+    let mut role = DynamicRoleSpec {
+        id,
+        display_name: normalize_display_name(display_name),
+        glyph: normalize_glyph(glyph),
+        context_dir: normalize_context_dir(Some(context_dir), raw_id)?,
+        base_persona: Some(crate::PersonaKind::Server.slug().to_string()),
+        copy_source: Some(crate::PersonaKind::Server.slug().to_string()),
+        default_tools: normalize_tool_ids(default_tools.iter()),
+        managed_role_ids: Vec::new(),
+        enabled: true,
+        context_governance: ContextGovernanceSpec::default(),
+        created_at_ms: now,
+        updated_at_ms: now,
+    };
+    sync_role_context_governance_tools(&mut role);
+    validate_role_management_limits(&role)?;
+    validate_role_tool_ids(&role)?;
+    ensure_role_layout(&role, Some(prompt), true)?;
+    registry.roles.push(role.clone());
+    normalize_registry(&mut registry)?;
+    save_registry(&registry)?;
+    Ok((role, true))
+}
+
+pub(crate) fn set_server_split_roles_enabled(
+    role_ids: &[String],
+    enabled: bool,
+) -> Result<Vec<DynamicRoleSpec>> {
+    if role_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids = role_ids
+        .iter()
+        .map(|id| normalize_role_id(id))
+        .collect::<Result<Vec<_>>>()?;
+    let mut registry = load_registry_uncached()?;
+    let mut updated = Vec::new();
+    let mut non_split = Vec::new();
+    for role in &mut registry.roles {
+        if !ids.iter().any(|id| id == &role.id) {
+            continue;
+        }
+        if !is_server_split_role_spec(role) {
+            non_split.push(role.id.clone());
+            continue;
+        }
+        role.enabled = enabled;
+        role.updated_at_ms = crate::unix_timestamp_millis_u64_shared();
+        sync_role_context_governance_tools(role);
+        validate_role_management_limits(role)?;
+        validate_role_tool_ids(role)?;
+        if enabled {
+            ensure_role_layout(role, None, false)?;
+        }
+        updated.push(role.clone());
+    }
+    if !non_split.is_empty() {
+        anyhow::bail!("拒绝操作非御网络角色：{}", non_split.join(", "));
+    }
+    let missing = ids
+        .iter()
+        .filter(|id| !updated.iter().any(|role| &role.id == *id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        anyhow::bail!("未找到御网络角色：{}", missing.join(", "));
+    }
+    normalize_registry(&mut registry)?;
+    save_registry(&registry)?;
+    Ok(updated)
 }
 
 pub(crate) fn ensure_role_runtime_ready(role: &DynamicRoleSpec) -> Result<()> {
